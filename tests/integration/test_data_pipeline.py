@@ -38,15 +38,22 @@ class FakeExchange:
             rows = [row for row in rows if row[0] >= since]
         return rows[: limit or 1000]
 
+    @property
+    def last_price(self) -> float:
+        """Dernier prix des bougies servies : le carnet doit rester coherent avec elles."""
+        return float(self.candles[-1][4]) if self.candles else 2000.0
+
     async def fetch_order_book(self, symbol, limit=None):
+        mid = self.last_price
+        tick = mid * 0.0001
         return {
-            "bids": [[2000.0 - i, 1.0 + i] for i in range(limit or 20)],
-            "asks": [[2001.0 + i, 0.5 + i] for i in range(limit or 20)],
+            "bids": [[mid - tick * (i + 1), 1.0 + i] for i in range(limit or 20)],
+            "asks": [[mid + tick * (i + 1), 0.5 + i] for i in range(limit or 20)],
             "timestamp": 1704067200000,
         }
 
     async def fetch_ticker(self, symbol):
-        return {"last": 2000.5}
+        return {"last": self.last_price}
 
     async def fetch_funding_rate(self, symbol):
         return {"fundingRate": 0.0003}
