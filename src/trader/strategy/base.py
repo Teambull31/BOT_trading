@@ -96,6 +96,27 @@ class BaseStrategy(ABC):
                     )
             setattr(self.params, key, float(value))
 
+    def residual_risk(self, data: MarketSnapshot, direction: int) -> list[str]:
+        """Risques residuels a mentionner quand aucune objection precise n'est trouvee.
+
+        `contra_evidence` ne doit JAMAIS etre vide sur un signal directionnel.
+        Ne rien avoir trouve n'est pas la meme chose que n'avoir aucun risque :
+        c'est l'aveu que les controles effectues n'ont rien vu, ce qui reste une
+        information — et un rappel que le trade peut echouer quand meme.
+        """
+        atr_pct = self.feature(data, "atr_pct")
+        sense = "hausse" if direction > 0 else "baisse"
+        risks = [
+            f"aucune contre-indication detectee par {self.name} : "
+            f"absence de preuve contre le trade, pas preuve de son bien-fonde"
+        ]
+        if atr_pct is not None:
+            risks.append(
+                f"volatilite courante de {atr_pct:.2f} % par bougie : le stop peut etre "
+                f"touche par du bruit avant que la {sense} attendue se materialise"
+            )
+        return risks
+
     def neutral(self, asset: str, reason: str) -> StrategyOutput:
         """Signal neutre documente (aucune position, mais une explication)."""
         return StrategyOutput(

@@ -33,9 +33,7 @@ warnings.filterwarnings("ignore")
 
 def make_snapshot(frame=None, funding=None, **kwargs):
     frame = frame if frame is not None else make_ohlcv(n=500, drift=0.001, vol=0.006, seed=7)
-    funding_series = (
-        pd.Series(funding, index=frame.index) if funding is not None else None
-    )
+    funding_series = pd.Series(funding, index=frame.index) if funding is not None else None
     features = FeatureBuilder(timeframe="1h").build(frame, funding_rates=funding_series)
     return build_snapshot("ETH/USDT", frame, features, **kwargs)
 
@@ -99,9 +97,7 @@ def test_cannot_be_disabled():
 
 
 def test_neutral_signal_needs_no_audit():
-    report = DevilAdvocate().review(
-        make_decision(Signal.NEUTRAL), make_snapshot(), make_regime()
-    )
+    report = DevilAdvocate().review(make_decision(Signal.NEUTRAL), make_snapshot(), make_regime())
     assert report.recommendation is ContraRecommendation.PROCEED
     assert report.contra_score == 0.0
 
@@ -117,9 +113,7 @@ def test_regime_transition_is_flagged():
 
 
 def test_uncertain_regime_is_flagged():
-    report = DevilAdvocate().review(
-        make_decision(), make_snapshot(), make_regime(Regime.UNCERTAIN)
-    )
+    report = DevilAdvocate().review(make_decision(), make_snapshot(), make_regime(Regime.UNCERTAIN))
     assert any("regime non identifie" in signal for signal in report.contra_signals)
     assert report.checks["regime_uncertainty"] > 0.5
 

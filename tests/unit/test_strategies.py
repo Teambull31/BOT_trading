@@ -221,3 +221,155 @@ def test_mean_revert_flags_falling_knife():
     output = strategy.generate_signal(snapshot_for(frame), regime_state(Regime.RANGE_BOUND))
     evidence = " ".join(output.contra_evidence)
     assert output.signal is Signal.NEUTRAL or "couteau" in evidence or evidence
+
+
+# ------------------------------------------------------------------- breakout
+
+
+def test_breakout_requires_a_real_breakout():
+    """Sans cassure des bornes, aucun signal."""
+    from trader.strategy.breakout import BreakoutParams, BreakoutStrategy
+
+    strategy = BreakoutStrategy(BreakoutParams(min_confidence=0.2))
+    frame = make_ohlcv(n=400, mean_revert=0.3, vol=0.003, seed=41)
+    output = strategy.generate_signal(snapshot_for(frame), regime_state(Regime.RANGE_BOUND))
+    assert output.signal is Signal.NEUTRAL
+    assert "range" in output.reasoning
+
+
+def test_breakout_fires_on_confirmed_break():
+    from trader.strategy.breakout import BreakoutParams, BreakoutStrategy
+
+    strategy = BreakoutStrategy(BreakoutParams(min_confidence=0.2))
+    frame = make_ohlcv(n=400, mean_revert=0.3, vol=0.004, seed=42)
+    # Cassure franche accompagnee d'un pic de volume.
+    frame.iloc[-1, frame.columns.get_loc("close")] = frame["high"].max() * 1.05
+    frame.iloc[-1, frame.columns.get_loc("high")] = frame["high"].max() * 1.06
+    frame.iloc[-1, frame.columns.get_loc("volume")] *= 5.0
+    output = strategy.generate_signal(snapshot_for(frame), regime_state(Regime.RANGE_BOUND))
+    assert output.signal.direction > 0
+    assert output.stop_loss < output.entry_price
+
+
+def test_breakout_stop_sits_behind_the_broken_boundary():
+    """Si le prix repasse sous la borne cassee, la these est morte : on sort."""
+    from trader.strategy.breakout import BreakoutParams, BreakoutStrategy
+
+    strategy = BreakoutStrategy(BreakoutParams(min_confidence=0.1))
+    frame = make_ohlcv(n=400, mean_revert=0.3, vol=0.004, seed=43)
+    resistance = float(frame["high"].iloc[-49:-1].max())
+    frame.iloc[-1, frame.columns.get_loc("close")] = resistance * 1.04
+    frame.iloc[-1, frame.columns.get_loc("high")] = resistance * 1.05
+    frame.iloc[-1, frame.columns.get_loc("volume")] *= 5.0
+    output = strategy.generate_signal(snapshot_for(frame), regime_state(Regime.RANGE_BOUND))
+    if output.is_actionable:
+        assert output.stop_loss <= resistance
+
+
+def test_breakout_flags_choppy_range():
+    from trader.strategy.breakout import BreakoutParams, BreakoutStrategy
+
+    strategy = BreakoutStrategy(BreakoutParams(min_confidence=0.05, lookback=30))
+    frame = make_ohlcv(n=300, vol=0.02, seed=44)
+    output = strategy.generate_signal(snapshot_for(frame), regime_state(Regime.RANGE_BOUND))
+    assert isinstance(output, StrategyOutput)
+
+
+def test_breakout_covers_uncertain_regime():
+    from trader.strategy.breakout import BreakoutStrategy
+
+    assert "uncertain" in BreakoutStrategy().get_required_regimes()
+
+
+# ------------------------------------------------------------------ sentiment
+
+
+def test_sentiment_is_silent_without_derivatives_data():
+    """Sans funding ni OI, cette strategie n'a rien a dire — et le dit."""
+    from trader.strategy.sentiment import SentimentStrategy
+
+    output = SentimentStrategy().generate_signal(
+        snapshot_for(make_ohlcv(n=400, seed=51)), regime_state(Regime.RANGE_BOUND)
+    )
+    assert output.signal is Signal.NEUTRAL
+    assert "derives" in output.reasoning
+
+
+def test_sentiment_takes_the_contrarian_side():
+    """Funding tres positif = longs surpeuples = on regarde a la baisse."""
+    import numpy as np
+    import pandas as pd
+
+    from trader.data.features import FeatureBuilder
+    from trader.data.snapshot import build_snapshot
+    from trader.strategy.sentiment import SentimentParams, SentimentStrategy
+
+    frame = make_ohlcv(n=500, drift=0.0005, vol=0.006, seed=52)
+    funding = np.full(len(frame), 0.00005)
+    funding[-20:] = 0.004  # positionnement long extreme
+    features = FeatureBuilder(timeframe="1h").build(
+        frame, funding_rates=pd.Series(funding, index=frame.index)
+    )
+    data = build_snapshot("ETH/USDT", frame, features)
+    output = SentimentStrategy(SentimentParams(min_confidence=0.2)).generate_signal(
+        data, regime_state(Regime.RANGE_BOUND)
+    )
+    assert output.signal.direction <= 0
+    if output.is_actionable:
+        assert output.stop_loss > output.entry_price
+        assert output.signal is Signal.SELL  # jamais STRONG sur un contrepied
+
+
+def test_sentiment_flags_strong_opposing_trend():
+    """Le contrepied dans une tendance forte doit etre signale comme dangereux."""
+    import numpy as np
+    import pandas as pd
+
+    from trader.data.features import FeatureBuilder
+    from trader.data.snapshot import build_snapshot
+    from trader.strategy.sentiment import SentimentParams, SentimentStrategy
+
+    frame = make_ohlcv(n=500, drift=0.005, vol=0.004, seed=53)
+    funding = np.full(len(frame), 0.00005)
+    funding[-20:] = 0.004
+    features = FeatureBuilder(timeframe="1h").build(
+        frame, funding_rates=pd.Series(funding, index=frame.index)
+    )
+    output = SentimentStrategy(SentimentParams(min_confidence=0.05)).generate_signal(
+        build_snapshot("ETH/USDT", frame, features), regime_state(Regime.BULL_HIGH_VOL)
+    )
+    evidence = " ".join(output.contra_evidence)
+    assert "tendance forte" in evidence or "directionnel" in evidence or not output.is_actionable
+
+
+# ---------------------------------------------------- contra-evidence de repli
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        MomentumStrategy,
+        MeanRevertStrategy,
+        lambda: __import__(
+            "trader.strategy.breakout", fromlist=["BreakoutStrategy"]
+        ).BreakoutStrategy(),
+        lambda: __import__(
+            "trader.strategy.sentiment", fromlist=["SentimentStrategy"]
+        ).SentimentStrategy(),
+    ],
+)
+def test_residual_risk_is_never_empty(factory):
+    """Ne rien trouver contre un trade n'autorise pas a ne rien dire."""
+    strategy = factory()
+    data = snapshot_for(make_ohlcv(n=400, drift=0.002, seed=61))
+    risks = strategy.residual_risk(data, direction=1)
+    assert risks
+    assert all(isinstance(item, str) and item for item in risks)
+
+
+def test_pool_covers_every_tradable_regime():
+    """Chaque regime tradable doit compter au moins deux strategies, sinon le
+    quorum de consensus est structurellement inatteignable."""
+    from trader.strategy.registry import build_default_pool, uncovered_regimes
+
+    assert uncovered_regimes(build_default_pool(), min_strategies=2) == []

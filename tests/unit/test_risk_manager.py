@@ -270,9 +270,7 @@ def test_missing_target_is_rejected(manager):
 
 
 def test_duplicate_position_is_rejected(manager, portfolio):
-    portfolio.open_position(
-        position_from_fill("ETH/USDT", OrderSide.BUY, 0.1, ENTRY, ENTRY * 0.97)
-    )
+    portfolio.open_position(position_from_fill("ETH/USDT", OrderSide.BUY, 0.1, ENTRY, ENTRY * 0.97))
     verdict = manager.evaluate(make_intent())
     assert not verdict.is_approved
     assert "deja ouverte" in verdict.reasons[0]
@@ -289,9 +287,7 @@ def test_max_concurrent_positions_is_enforced(manager, portfolio, settings):
 
 
 def test_cooldown_blocks_rapid_reentry(manager, portfolio, settings):
-    portfolio.open_position(
-        position_from_fill("ETH/USDT", OrderSide.BUY, 0.1, ENTRY, ENTRY * 0.97)
-    )
+    portfolio.open_position(position_from_fill("ETH/USDT", OrderSide.BUY, 0.1, ENTRY, ENTRY * 0.97))
     portfolio.close_position("ETH/USDT", ENTRY * 1.01, reason="take_profit")
     verdict = manager.evaluate(make_intent())
     assert not verdict.is_approved

@@ -20,7 +20,10 @@ from pathlib import Path
 
 import typer
 
+from trader.adaptation.decay_detector import StrategyDecayDetector
 from trader.adaptation.devil_advocate import DevilAdvocate
+from trader.adaptation.evaluator import StrategyEvaluator
+from trader.adaptation.retrainer import WalkForwardRetrainer
 from trader.config import Mode, Settings, load_settings
 from trader.data.features import FeatureBuilder
 from trader.data.ingester import DataIngester
@@ -57,9 +60,20 @@ def build_orchestrator(settings: Settings) -> TradingOrchestrator:
     kill_switch = KillSwitch(settings.kill_switch, event_sink=event_sink)
     risk_manager = RiskManager(settings, portfolio, kill_switch=kill_switch, event_sink=event_sink)
 
+    evaluator = StrategyEvaluator(
+        store,
+        min_trades=settings.decay_detection.min_trades_for_verdict,
+        mode=settings.general.mode.value,
+    )
+    decay_detector = StrategyDecayDetector(
+        settings.decay_detection, evaluator, settings.ensemble.shadow_mode_days
+    )
+
     strategies = build_default_pool()
     log_coverage(strategies, settings.ensemble.min_active_strategies)
-    ensemble = StrategyEnsemble(strategies, settings.ensemble)
+    ensemble = StrategyEnsemble(
+        strategies, settings.ensemble, metrics_provider=evaluator.metrics_provider
+    )
 
     executor = OrderExecutor(
         settings,
@@ -75,9 +89,14 @@ def build_orchestrator(settings: Settings) -> TradingOrchestrator:
         portfolio=portfolio,
         risk_manager=risk_manager,
         executor=executor,
-        devil_advocate=DevilAdvocate(settings.devil_advocate),
+        devil_advocate=DevilAdvocate(
+            settings.devil_advocate, health_provider=decay_detector.health_provider
+        ),
         detector=RegimeDetector(settings.regime, timeframe),
         feature_builder=FeatureBuilder(timeframe=timeframe),
+        evaluator=evaluator,
+        decay_detector=decay_detector,
+        retrainer=WalkForwardRetrainer(settings),
     )
 
 

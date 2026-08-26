@@ -101,11 +101,13 @@ class MeanRevertStrategy(BaseStrategy):
             confirmations.append(f"Hurst {hurst:.2f} < 0.5 : serie anti-persistante")
 
         contra = self._contra_evidence(data, regime, direction, adx, hurst)
-        score = max(0.0, score - 0.15 * len(contra))
+        specific_contra = len(contra)
+        contra = contra or self.residual_risk(data, direction)
+        score = max(0.0, score - 0.15 * specific_contra)
         if score < params.min_confidence:
             return self.neutral(
                 data.asset,
-                f"exces reel mais {len(contra)} contre-indications (score {score:.2f})",
+                f"exces reel mais {specific_contra} contre-indications (score {score:.2f})",
             )
 
         stop, _ = self.atr_levels(data, direction)

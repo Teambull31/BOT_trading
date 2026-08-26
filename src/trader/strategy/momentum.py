@@ -91,12 +91,14 @@ class MomentumStrategy(BaseStrategy):
             confirmations.append(f"volume soutenu (x{volume_ratio:.2f} la moyenne)")
 
         contra = self._contra_evidence(data, regime, direction, rsi_value, volume_ratio, adx)
+        specific_contra = len(contra)
+        contra = contra or self.residual_risk(data, direction)
         # Chaque preuve contraire ampute la conviction : le doute a un cout.
-        score = max(0.0, score - 0.12 * len(contra))
+        score = max(0.0, score - 0.12 * specific_contra)
         if score < params.min_confidence:
             return self.neutral(
                 data.asset,
-                f"momentum insuffisant apres prise en compte de {len(contra)} contre-indications "
+                f"momentum insuffisant apres {specific_contra} contre-indications "
                 f"(score {score:.2f})",
             )
 

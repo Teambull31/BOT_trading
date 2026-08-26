@@ -26,7 +26,10 @@ from typing import Any
 
 import pandas as pd
 
+from trader.adaptation.decay_detector import StrategyDecayDetector
 from trader.adaptation.devil_advocate import DevilAdvocate
+from trader.adaptation.evaluator import StrategyEvaluator
+from trader.adaptation.retrainer import WalkForwardRetrainer
 from trader.config import Mode, Settings
 from trader.data.features import FeatureBuilder
 from trader.data.ingester import DataIngester, PermanentError, TransientError
@@ -96,6 +99,9 @@ class TradingOrchestrator:
         devil_advocate: DevilAdvocate | None = None,
         detector: RegimeDetector | None = None,
         feature_builder: FeatureBuilder | None = None,
+        evaluator: StrategyEvaluator | None = None,
+        decay_detector: StrategyDecayDetector | None = None,
+        retrainer: WalkForwardRetrainer | None = None,
         alerter: Any | None = None,
         metrics: Any | None = None,
     ) -> None:
@@ -106,7 +112,17 @@ class TradingOrchestrator:
         self.portfolio = portfolio
         self.risk = risk_manager
         self.executor = executor
-        self.devil_advocate = devil_advocate or DevilAdvocate(settings.devil_advocate)
+        self.evaluator = evaluator
+        self.decay = decay_detector
+        self.retrainer = retrainer
+        self.devil_advocate = devil_advocate or DevilAdvocate(
+            settings.devil_advocate,
+            health_provider=decay_detector.health_provider if decay_detector else None,
+        )
+        # L'ensemble pondere selon la performance mesuree, pas selon une
+        # confiance declaree : on branche l'evaluateur comme source de verite.
+        if evaluator is not None and self.ensemble.metrics_provider is None:
+            self.ensemble.metrics_provider = evaluator.metrics_provider
         self.timeframe = settings.data.primary_timeframe
         self.detector = detector or RegimeDetector(settings.regime, self.timeframe)
         self.features = feature_builder or FeatureBuilder(timeframe=self.timeframe)
@@ -116,6 +132,7 @@ class TradingOrchestrator:
         self._running = False
         self._cycles = 0
         self._market_cache: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
+        self._last_retraining: datetime | None = None
 
     @property
     def assets(self) -> list[str]:
@@ -152,6 +169,7 @@ class TradingOrchestrator:
                     "asset_cycle_error", asset=asset, error=str(exc), error_type=type(exc).__name__
                 )
 
+        await self._run_adaptation(report, stamp)
         report.equity = self.portfolio.mark_to_market(prices, stamp)
         self._persist_cycle(report, prices)
         self.kill_switch.beat(stamp, {"cycle": self._cycles, "equity": round(report.equity, 2)})
@@ -245,6 +263,108 @@ class TradingOrchestrator:
             f"Position ouverte {asset} {intent.side.value} "
             f"{result.order.filled_size:.6f} @ {result.order.average_price:.2f}",
         )
+
+    async def _run_adaptation(self, report: CycleReport, now: datetime) -> None:
+        """Detecte le decay des strategies et declenche les retrainings.
+
+        L'adaptation tourne APRES le trading du cycle : modifier les poids au
+        milieu d'un cycle rendrait les decisions de ce cycle inexplicables a
+        posteriori, ce qui casserait l'audit trail.
+        """
+        if self.decay is None or not self.decay.needs_check(now):
+            return
+
+        names = list(self.ensemble.records)
+        try:
+            verdicts = self.decay.check_all(names, now)
+        except Exception as exc:  # noqa: BLE001 - l'adaptation ne tue pas le trading
+            report.errors.append(f"decay: {exc}")
+            log.error("decay_check_failed", error=str(exc))
+            return
+
+        degraded: list[str] = []
+        for name, verdict in verdicts.items():
+            self.ensemble.set_health(name, verdict.health)
+            self.store.save_strategy_metrics(name, verdict.to_dict() | verdict.metrics)
+            if verdict.health.value != "healthy":
+                degraded.append(f"{name}={verdict.health.value}")
+            if verdict.needs_retraining:
+                await self._retrain(name, report, now)
+
+        if degraded:
+            await self._alert("WARNING", f"Sante des strategies degradee : {', '.join(degraded)}")
+
+    async def _retrain(self, strategy_name: str, report: CycleReport, now: datetime) -> None:
+        """Relance un retraining walk-forward pour une strategie en declin."""
+        if self.retrainer is None:
+            return
+        if (
+            self._last_retraining is not None
+            and (now - self._last_retraining).total_seconds() < 3600
+        ):
+            # Un retraining est couteux et ne s'improvise pas a chaque cycle.
+            return
+
+        record = self.ensemble.records.get(strategy_name)
+        cached = next(iter(self._market_cache.values()), None)
+        if record is None or cached is None:
+            return
+        ohlcv, features = cached
+        try:
+            result = self.retrainer.retrain_strategy(
+                record.strategy, ohlcv, features, self._retraining_score, now=now
+            )
+        except Exception as exc:  # noqa: BLE001 - un retraining rate n'arrete pas le systeme
+            report.errors.append(f"retraining {strategy_name}: {exc}")
+            log.error("retraining_failed", strategy=strategy_name, error=str(exc))
+            return
+
+        self.store.save_event(
+            "INFO" if result.accepted else "WARNING",
+            "retraining",
+            f"{strategy_name}: {result.reason}",
+            result.to_dict(),
+        )
+        self._last_retraining = now
+
+    def _retraining_score(
+        self, strategy: Any, ohlcv: pd.DataFrame, features: pd.DataFrame
+    ) -> float:
+        """Score d'un jeu de parametres : qualite des signaux produits.
+
+        On n'execute pas un backtest complet par candidat (trop couteux en
+        boucle) : on mesure la coherence des signaux avec le rendement futur
+        de la barre suivante, ce qui est un proxy direct de l'edge.
+        """
+        from trader.data.snapshot import build_snapshot
+        from trader.models import Regime, RegimeState
+
+        if len(ohlcv) < 60 or features.empty:
+            return 0.0
+        neutral_regime = RegimeState(
+            regime=Regime(self.detector.last_state.regime.value)
+            if self.detector.last_state
+            else Regime.RANGE_BOUND,
+            confidence=0.7,
+            agreement_score=1.0,
+            transition_probability=0.2,
+        )
+        future_returns = ohlcv["close"].pct_change().shift(-1)
+        score = 0.0
+        count = 0
+        for position in range(50, len(ohlcv) - 1, max(1, len(ohlcv) // 40)):
+            data = build_snapshot("backtest", ohlcv, features, position=position)
+            output = strategy.generate_signal(data, neutral_regime)
+            if not output.is_actionable:
+                continue
+            realized = float(future_returns.iloc[position])
+            if not pd.notna(realized):
+                continue
+            score += output.signal.direction * realized * output.confidence
+            count += 1
+        if count < 3:
+            return 0.0
+        return score / count * 10_000.0
 
     async def _handle_exits(self, asset: str, snapshot: MarketSnapshot, regime: RegimeState) -> int:
         """Ferme les positions dont le stop, la cible ou le regime l'exige."""

@@ -118,9 +118,7 @@ def build_system(settings, candles, strategies=None, seed_data=True):
 def build_frame(candles):
     import pandas as pd
 
-    frame = pd.DataFrame(
-        candles, columns=["timestamp", "open", "high", "low", "close", "volume"]
-    )
+    frame = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="ms", utc=True)
     return frame.set_index("timestamp")
 

@@ -13,15 +13,30 @@ from collections.abc import Sequence
 from trader.logging_setup import get_logger
 from trader.models import Regime
 from trader.strategy.base import BaseStrategy
+from trader.strategy.breakout import BreakoutStrategy
 from trader.strategy.mean_revert import MeanRevertStrategy
 from trader.strategy.momentum import MomentumStrategy
+from trader.strategy.sentiment import SentimentStrategy
 
 log = get_logger(__name__)
 
 
 def build_default_pool() -> list[BaseStrategy]:
-    """Construit le pool de strategies par defaut."""
-    return [MomentumStrategy(), MeanRevertStrategy()]
+    """Construit le pool de strategies par defaut.
+
+    La composition n'est pas arbitraire : la regle de consensus exige DEUX
+    strategies actives par regime. Momentum et mean-reversion couvrent des
+    regimes disjoints et ne peuvent donc jamais former un quorum a elles deux.
+    Breakout (range + tendance) et sentiment (tous regimes tradables) comblent
+    ce trou : chaque regime tradable est desormais couvert par au moins deux
+    strategies aux logiques differentes.
+    """
+    return [
+        MomentumStrategy(),
+        MeanRevertStrategy(),
+        BreakoutStrategy(),
+        SentimentStrategy(),
+    ]
 
 
 def coverage_report(strategies: Sequence[BaseStrategy]) -> dict[str, list[str]]:
@@ -41,11 +56,14 @@ def uncovered_regimes(strategies: Sequence[BaseStrategy], min_strategies: int = 
     pendant des jours pourquoi le bot ne prend aucune position.
     """
     coverage = coverage_report(strategies)
+    # La crise est volontairement sans couverture : aucune position n'y est
+    # ouverte, par regle de risque. UNCERTAIN, en revanche, doit etre couvert :
+    # sinon la regle "diviser l'exposition par deux en regime incertain" ne
+    # s'applique jamais, faute de trade a reduire.
     return [
         regime
         for regime, names in coverage.items()
-        if regime not in (Regime.CRISIS.value, Regime.UNCERTAIN.value)
-        and len(names) < min_strategies
+        if regime != Regime.CRISIS.value and len(names) < min_strategies
     ]
 
 
