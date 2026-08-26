@@ -1,0 +1,76 @@
+# Deploiement local complet : trader + watchdog + observabilite.
+#
+# Le watchdog tourne dans un CONTENEUR SEPARE, avec le meme volume de donnees.
+# C'est le point essentiel : si le conteneur du trader se fige ou meurt, le
+# watchdog reste vivant, voit le heartbeat s'arreter et pose la sentinelle.
+
+services:
+  trader:
+    build: .
+    container_name: trader
+    restart: unless-stopped
+    command: ["python", "-m", "trader.main", "paper"]
+    environment:
+      - TRADER_ALERT_URLS=${TRADER_ALERT_URLS:-}
+      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
+    volumes:
+      - trader-data:/app/data
+      - trader-logs:/app/logs
+      - trader-artifacts:/app/artifacts
+      - kill-switch:/tmp/killswitch
+    ports:
+      - "127.0.0.1:9090:9090"   # metriques Prometheus
+      - "127.0.0.1:9091:9091"   # kill switch HTTP
+      - "127.0.0.1:9092:9092"   # dashboard lecture seule
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9092/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  watchdog:
+    build: .
+    container_name: trader-watchdog
+    restart: unless-stopped
+    command: ["python", "-m", "trader.risk.kill_switch", "--config", "config/default.toml"]
+    volumes:
+      - trader-data:/app/data
+      - kill-switch:/tmp/killswitch
+    depends_on:
+      - trader
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: trader-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9095:9090"
+    depends_on:
+      - trader
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: trader-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  trader-data:
+  trader-logs:
+  trader-artifacts:
+  kill-switch:
+  prometheus-data:
+  grafana-data:

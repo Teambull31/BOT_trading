@@ -1,0 +1,58 @@
+# Regles d'alerte Prometheus.
+#
+# Ces alertes doublent celles du systeme : si le trader lui-meme est incapable
+# d'alerter (fige, crash, reseau coupe), Prometheus le voit de l'exterieur.
+groups:
+  - name: trader
+    rules:
+      - alert: TraderDown
+        expr: up{job="trader"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Le trader ne repond plus"
+          description: "Aucune metrique collectee depuis 2 minutes."
+
+      - alert: DrawdownEleve
+        expr: trader_drawdown_current > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Drawdown superieur a 10 %"
+          description: "Drawdown courant {{ $value }} % — la limite en dur est a 15 %."
+
+      - alert: AucunCycle
+        expr: rate(trader_cycles_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Le trader ne cycle plus"
+          description: "Aucun cycle execute depuis 10 minutes : process probablement fige."
+
+      - alert: ErreursCyclesRepetees
+        expr: rate(trader_cycle_errors_total[15m]) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Erreurs recurrentes dans les cycles"
+
+      - alert: StrategieMorte
+        expr: trader_strategy_health == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Strategie {{ $labels.strategy }} desactivee"
+
+      - alert: SlippageAnormal
+        expr: histogram_quantile(0.95, rate(trader_slippage_bps_bucket[1h])) > 50
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slippage p95 superieur a 50 bps"
+          description: "Le modele de cout sous-estime la realite du marche."

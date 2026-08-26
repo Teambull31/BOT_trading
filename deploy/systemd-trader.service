@@ -1,0 +1,38 @@
+# Deploiement sans Docker : unite systemd du trader.
+#
+# Installation :
+#   sudo cp deploy/systemd-trader.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now trader
+
+[Unit]
+Description=Agent de trading autonome adaptatif
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/adaptive-trader
+Environment=PYTHONPATH=/opt/adaptive-trader/src
+EnvironmentFile=/opt/adaptive-trader/.env
+ExecStart=/opt/adaptive-trader/.venv/bin/python -m trader.main paper
+
+# Redemarrage automatique, MAIS pas en boucle : si le service tombe cinq fois
+# en dix minutes, il reste arrete. Un bot qui redemarre sans fin sur un bug
+# perd de l'argent a chaque tentative.
+Restart=on-failure
+RestartSec=30
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+# Durcissement : le process n'a aucune raison d'ecrire ailleurs que dans ses
+# propres repertoires.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/adaptive-trader/data /opt/adaptive-trader/logs /opt/adaptive-trader/artifacts /tmp
+
+[Install]
+WantedBy=multi-user.target

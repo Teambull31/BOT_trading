@@ -1,0 +1,27 @@
+# Watchdog externe du kill switch, en PROCESS SEPARE du trader.
+#
+# C'est tout l'interet : si le trader se fige, cette unite reste vivante,
+# constate l'absence de heartbeat et arme la sentinelle d'arret.
+
+[Unit]
+Description=Watchdog du kill switch (trading)
+After=trader.service
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/adaptive-trader
+Environment=PYTHONPATH=/opt/adaptive-trader/src
+ExecStart=/opt/adaptive-trader/.venv/bin/python -m trader.risk.kill_switch --config config/default.toml
+
+Restart=always
+RestartSec=15
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/adaptive-trader/data /tmp
+
+[Install]
+WantedBy=multi-user.target

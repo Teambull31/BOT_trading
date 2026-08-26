@@ -1,0 +1,9 @@
+# Configuration Prometheus pour l'agent de trading.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: trader
+    static_configs:
+      - targets: ["trader:9090"]

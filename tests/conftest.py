@@ -128,3 +128,13 @@ def feature_builder() -> FeatureBuilder:
 def featured_market(trending_market: pd.DataFrame, feature_builder: FeatureBuilder):
     """Couple (ohlcv, features) pret a l'emploi."""
     return trending_market, feature_builder.build(trending_market)
+
+
+@pytest.fixture
+def paper_orchestrator(settings):
+    """Systeme complet assemble en paper, sans reseau ni serveur demarre."""
+    from trader.main import build_orchestrator
+
+    orchestrator = build_orchestrator(settings)
+    yield orchestrator
+    orchestrator.store.close()

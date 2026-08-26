@@ -31,6 +31,9 @@ from trader.data.store import DataStore
 from trader.execution.executor import OrderExecutor
 from trader.execution.paper import PaperBroker
 from trader.logging_setup import configure_logging, get_logger
+from trader.monitoring.alerter import Alerter
+from trader.monitoring.dashboard import DashboardServer
+from trader.monitoring.metrics import TraderMetrics
 from trader.orchestrator import TradingOrchestrator
 from trader.portfolio import Portfolio
 from trader.regime.detector import RegimeDetector
@@ -80,6 +83,11 @@ def build_orchestrator(settings: Settings) -> TradingOrchestrator:
         broker=PaperBroker(settings.execution),
         store=store,
     )
+    metrics = TraderMetrics(
+        port=settings.monitoring.prometheus_port, enabled=settings.monitoring.prometheus_enabled
+    )
+    alerter = Alerter(settings.monitoring, store=store)
+
     timeframe = settings.data.primary_timeframe
     return TradingOrchestrator(
         settings=settings,
@@ -97,6 +105,8 @@ def build_orchestrator(settings: Settings) -> TradingOrchestrator:
         evaluator=evaluator,
         decay_detector=decay_detector,
         retrainer=WalkForwardRetrainer(settings),
+        alerter=alerter,
+        metrics=metrics,
     )
 
 
@@ -104,6 +114,14 @@ async def _run(settings: Settings, backfill: bool, max_cycles: int | None) -> No
     """Prepare les donnees puis lance la boucle, avec arret propre sur SIGINT/SIGTERM."""
     orchestrator = build_orchestrator(settings)
     orchestrator.kill_switch.start_http_server()
+    if orchestrator.metrics is not None:
+        orchestrator.metrics.start()
+    dashboard = DashboardServer(
+        orchestrator,
+        host=settings.kill_switch.http_host,
+        port=settings.monitoring.prometheus_port + 2,
+    )
+    dashboard.start()
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -117,7 +135,10 @@ async def _run(settings: Settings, backfill: bool, max_cycles: int | None) -> No
         log.info("backfill_started", assets=orchestrator.assets)
         await orchestrator.ingester.backfill(timeframes=[settings.data.primary_timeframe])
 
-    await orchestrator.run_forever(max_cycles=max_cycles)
+    try:
+        await orchestrator.run_forever(max_cycles=max_cycles)
+    finally:
+        dashboard.stop()
 
 
 @cli.command()
