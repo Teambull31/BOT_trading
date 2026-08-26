@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import uuid
 from dataclasses import dataclass
 
 from trader.config import ExecutionConfig
@@ -161,7 +162,11 @@ def build_order(
 ) -> Order:
     """Construit un ordre horodate avec un identifiant client unique."""
     stamp = utc_now()
-    client_id = f"{asset.replace('/', '')}-{side.value}-{int(stamp.timestamp() * 1000)}"
+    # Suffixe aleatoire indispensable : deux ordres emis dans la meme
+    # milliseconde partageraient sinon le meme identifiant, et un exchange
+    # rejette (ou pire, confond) deux ordres au meme client id.
+    suffix = uuid.uuid4().hex[:8]
+    client_id = f"{asset.replace('/', '')}-{side.value}-{int(stamp.timestamp() * 1000)}-{suffix}"
     return Order(
         asset=asset,
         side=side,

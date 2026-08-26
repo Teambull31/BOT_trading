@@ -313,3 +313,244 @@ async def test_orders_are_persisted(paper_settings, candles):
         from trader.data.store import OrderRow
 
         assert session.query(OrderRow).count() >= 1
+
+
+# ------------------------------------------------------- orchestrateur : bords
+
+
+async def test_liquidation_failure_is_reported_not_swallowed(paper_settings, candles):
+    """Si une liquidation echoue, le cycle doit le dire, pas l'ignorer."""
+    orchestrator, _, portfolio, risk = build_system(paper_settings, candles)
+    await orchestrator.run_cycle()
+    if portfolio.open_count == 0:
+        pytest.skip("aucune position ouverte sur cet echantillon")
+
+    async def failing_close(*args, **kwargs):
+        raise RuntimeError("exchange injoignable")
+
+    orchestrator.executor.close_position = failing_close
+    risk.kill_switch.trigger("arret", source="test")
+    report = await orchestrator.run_cycle()
+    assert report.halted
+    assert any("liquidation" in error for error in report.errors)
+    assert portfolio.open_count == 1  # la position reste, et on le sait
+
+
+async def test_exit_failure_raises_critical_alert(paper_settings, candles):
+    class RecordingAlerter:
+        def __init__(self):
+            self.alerts = []
+
+        async def send(self, level, message, details=None):
+            self.alerts.append((level, message))
+            return True
+
+    orchestrator, _, portfolio, _ = build_system(paper_settings, candles)
+    alerter = RecordingAlerter()
+    orchestrator.alerter = alerter
+    await orchestrator.run_cycle()
+    if portfolio.open_count == 0:
+        pytest.skip("aucune position ouverte sur cet echantillon")
+
+    position = portfolio.get_position("ETH/USDT")
+    position.stop_loss = position.entry_price * 1.5  # stop touche
+
+    from trader.execution.executor import ExecutionResult
+    from trader.execution.paper import build_order
+    from trader.models import OrderType
+
+    async def unfilled_close(asset, side, size, data, reason):
+        order = build_order(asset, side, size, None, OrderType.MARKET, reason=reason)
+        return ExecutionResult(order=order, filled=False, attempts=3, error="carnet vide")
+
+    orchestrator.executor.close_position = unfilled_close
+    await orchestrator.run_cycle()
+    assert any(level == "CRITICAL" for level, _ in alerter.alerts)
+    assert portfolio.open_count == 1  # on ne fait jamais disparaitre une position non fermee
+
+
+async def test_alerter_failure_does_not_break_cycle(paper_settings, candles):
+    class BrokenAlerter:
+        async def send(self, level, message, details=None):
+            raise RuntimeError("telegram hors service")
+
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    orchestrator.alerter = BrokenAlerter()
+    report = await orchestrator.run_cycle()
+    assert report.equity > 0
+
+
+async def test_metrics_hook_is_called(paper_settings, candles):
+    class RecordingMetrics:
+        def __init__(self):
+            self.calls = 0
+
+        def update_from_cycle(self, orchestrator, report, prices):
+            self.calls += 1
+
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    metrics = RecordingMetrics()
+    orchestrator.metrics = metrics
+    await orchestrator.run_cycle()
+    assert metrics.calls == 1
+
+
+async def test_stop_during_loop_ends_it_after_current_cycle(paper_settings, candles):
+    """stop() interrompt la boucle proprement, sans couper un cycle en cours."""
+
+    class StoppingMetrics:
+        def __init__(self, orchestrator):
+            self.orchestrator = orchestrator
+
+        def update_from_cycle(self, orchestrator, report, prices):
+            self.orchestrator.stop()
+
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    paper_settings.general.loop_interval_sec = 0
+    orchestrator.metrics = StoppingMetrics(orchestrator)
+    await orchestrator.run_forever(max_cycles=5)
+    assert orchestrator._cycles == 1
+
+
+async def test_shutdown_keeps_positions_open(paper_settings, candles):
+    """Un arret planifie ne liquide pas : seul le kill switch le fait."""
+    orchestrator, _, portfolio, _ = build_system(paper_settings, candles)
+    await orchestrator.run_cycle()
+    before = portfolio.open_count
+    await orchestrator.shutdown()
+    assert portfolio.open_count == before
+
+
+async def test_adaptation_runs_and_updates_health(paper_settings, candles):
+    """La boucle d'adaptation met a jour la sante des strategies apres le cycle."""
+    from trader.adaptation.decay_detector import StrategyDecayDetector
+    from trader.adaptation.evaluator import StrategyEvaluator
+
+    orchestrator, store, _, _ = build_system(paper_settings, candles)
+    evaluator = StrategyEvaluator(store, min_trades=1, mode="paper")
+    orchestrator.evaluator = evaluator
+    orchestrator.decay = StrategyDecayDetector(
+        paper_settings.decay_detection, evaluator, shadow_mode_days=14
+    )
+    await orchestrator.run_cycle()
+    assert orchestrator.decay.last_check is not None
+    for record in orchestrator.ensemble.records.values():
+        assert record.health is not None
+
+
+async def test_decay_failure_is_contained(paper_settings, candles):
+    class BrokenDecay:
+        last_check = None
+
+        def needs_check(self, now=None):
+            return True
+
+        def check_all(self, names, now=None):
+            raise RuntimeError("evaluateur casse")
+
+        def health_provider(self, name):
+            from trader.models import StrategyHealth
+
+            return StrategyHealth.HEALTHY
+
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    orchestrator.decay = BrokenDecay()
+    report = await orchestrator.run_cycle()
+    assert any("decay" in error for error in report.errors)
+    assert report.equity > 0  # le trading continue
+
+
+async def test_retraining_is_triggered_by_decay(paper_settings, candles, tmp_path):
+    """Une strategie en declin doit declencher un retraining, trace en base."""
+    from trader.adaptation.retrainer import WalkForwardRetrainer
+    from trader.models import StrategyHealth
+
+    orchestrator, store, _, _ = build_system(paper_settings, candles)
+    paper_settings.retraining.artifacts_dir = str(tmp_path / "retraining")
+
+    class DecayStub:
+        last_check = None
+
+        def needs_check(self, now=None):
+            return True
+
+        def check_all(self, names, now=None):
+            from trader.adaptation.decay_detector import DecayVerdict
+
+            self.last_check = now
+            return {
+                name: DecayVerdict(
+                    strategy=name,
+                    health=StrategyHealth.DEGRADING,
+                    signals=["hit rate en baisse"],
+                    metrics={"sharpe_30d": -0.2},
+                    weight_multiplier=0.5,
+                    needs_retraining=(name == "a"),
+                )
+                for name in names
+            }
+
+        def health_provider(self, name):
+            return StrategyHealth.DEGRADING
+
+    orchestrator.decay = DecayStub()
+    orchestrator.retrainer = WalkForwardRetrainer(paper_settings, max_candidates=2)
+    await orchestrator.run_cycle()
+
+    assert orchestrator.decay.last_check is not None
+    assert orchestrator.ensemble.records["a"].health is StrategyHealth.DEGRADING
+    events = [e for e in store.load_events() if e["source"] == "retraining"]
+    assert events, "le retraining doit laisser une trace dans l'audit trail"
+
+
+async def test_retraining_is_rate_limited(paper_settings, candles, tmp_path):
+    """Un retraining est couteux : il ne se relance pas a chaque cycle."""
+    from trader.adaptation.retrainer import WalkForwardRetrainer
+
+    orchestrator, store, _, _ = build_system(paper_settings, candles)
+    paper_settings.retraining.artifacts_dir = str(tmp_path / "retraining")
+    orchestrator.retrainer = WalkForwardRetrainer(paper_settings, max_candidates=1)
+
+    report = orchestrator_report()
+    await orchestrator._market_data("ETH/USDT")
+    await orchestrator._retrain("a", report, utc_now())
+    first = len([e for e in store.load_events() if e["source"] == "retraining"])
+    await orchestrator._retrain("a", report, utc_now())
+    second = len([e for e in store.load_events() if e["source"] == "retraining"])
+    assert second == first  # deuxieme appel immediat ignore
+
+
+def orchestrator_report():
+    from trader.orchestrator import CycleReport
+
+    return CycleReport(timestamp=utc_now())
+
+
+async def test_retraining_score_is_finite(paper_settings, candles):
+    """Le score de retraining doit rester exploitable, meme sur peu de donnees."""
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    ohlcv, features = await orchestrator._market_data("ETH/USDT")
+    strategy = orchestrator.ensemble.records["a"].strategy
+    score = orchestrator._retraining_score(strategy, ohlcv, features)
+    assert isinstance(score, float)
+    assert score == score  # non NaN
+
+
+async def test_retraining_score_on_short_history(paper_settings, candles):
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    ohlcv, features = await orchestrator._market_data("ETH/USDT")
+    strategy = orchestrator.ensemble.records["a"].strategy
+    assert orchestrator._retraining_score(strategy, ohlcv.head(30), features.head(30)) == 0.0
+
+
+async def test_retraining_failure_is_contained(paper_settings, candles):
+    class BrokenRetrainer:
+        def retrain_strategy(self, *args, **kwargs):
+            raise RuntimeError("optimiseur casse")
+
+    orchestrator, _, _, _ = build_system(paper_settings, candles)
+    orchestrator.retrainer = BrokenRetrainer()
+    await orchestrator._market_data("ETH/USDT")
+    report = orchestrator_report()
+    await orchestrator._retrain("a", report, utc_now())
+    assert any("retraining" in error for error in report.errors)

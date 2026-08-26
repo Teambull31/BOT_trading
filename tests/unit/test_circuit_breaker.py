@@ -190,3 +190,141 @@ def test_watchdog_run_once_reports_both_checks(switch):
     result = KillSwitchWatchdog(switch).run_once()
     assert set(result) == {"heartbeat_triggered", "drawdown_triggered"}
     assert not any(result.values())
+
+
+# ------------------------------------------------- kill switch : serveur HTTP
+
+
+def test_http_endpoints_kill_and_report(tmp_path):
+    """L'endpoint HTTP doit pouvoir tout arreter, meme sans acces au terminal."""
+    import json as json_module
+    import urllib.request
+
+    from trader.config import KillSwitchConfig
+    from trader.risk.kill_switch import KillSwitch
+
+    switch = KillSwitch(
+        KillSwitchConfig(
+            sentinel_path=str(tmp_path / "kill"),
+            http_enabled=True,
+            http_host="127.0.0.1",
+            http_port=19091,
+        )
+    )
+    switch.start_http_server()
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:19091/status", timeout=5) as response:
+            status = json_module.loads(response.read())
+        assert status["triggered"] is False
+
+        request = urllib.request.Request("http://127.0.0.1:19091/kill", method="POST", data=b"")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json_module.loads(response.read())
+        assert payload["status"] == "killed"
+        assert switch.is_triggered()
+        assert "HTTP" in switch.reason()
+    finally:
+        switch.stop_http_server()
+
+
+def test_http_unknown_endpoint_is_rejected(tmp_path):
+    import urllib.error
+    import urllib.request
+
+    from trader.config import KillSwitchConfig
+    from trader.risk.kill_switch import KillSwitch
+
+    switch = KillSwitch(
+        KillSwitchConfig(sentinel_path=str(tmp_path / "kill"), http_enabled=True, http_port=19092)
+    )
+    switch.start_http_server()
+    try:
+        request = urllib.request.Request("http://127.0.0.1:19092/autre", method="POST", data=b"")
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request, timeout=5)
+        assert excinfo.value.code == 404
+        assert not switch.is_triggered()
+    finally:
+        switch.stop_http_server()
+
+
+def test_http_server_disabled_by_config(tmp_path):
+    from trader.config import KillSwitchConfig
+    from trader.risk.kill_switch import KillSwitch
+
+    switch = KillSwitch(KillSwitchConfig(sentinel_path=str(tmp_path / "kill"), http_enabled=False))
+    switch.start_http_server()
+    assert switch._server is None
+
+
+def test_start_http_server_is_idempotent(tmp_path):
+    from trader.config import KillSwitchConfig
+    from trader.risk.kill_switch import KillSwitch
+
+    switch = KillSwitch(
+        KillSwitchConfig(sentinel_path=str(tmp_path / "kill"), http_enabled=True, http_port=19093)
+    )
+    switch.start_http_server()
+    server = switch._server
+    switch.start_http_server()
+    try:
+        assert switch._server is server
+    finally:
+        switch.stop_http_server()
+
+
+def test_corrupted_sentinel_still_halts(switch):
+    """Un fichier sentinelle illisible arrete quand meme le systeme."""
+    switch.sentinel.parent.mkdir(parents=True, exist_ok=True)
+    switch.sentinel.write_text("{ ceci n'est pas du json")
+    assert switch.is_triggered()
+    assert "illisible" in switch.reason()
+
+
+def test_heartbeat_with_corrupted_file(switch):
+    switch.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+    switch.heartbeat_path.write_text("pas du json")
+    assert switch.last_beat() is None
+    assert not switch.is_heartbeat_stale()
+
+
+def test_watchdog_ignores_already_triggered_switch(switch):
+    from trader.risk.kill_switch import KillSwitchWatchdog
+
+    switch.trigger("deja arme", source="test")
+    watchdog = KillSwitchWatchdog(switch)
+    assert not watchdog.check_heartbeat()  # pas de second declenchement
+
+
+def test_watchdog_without_db_returns_false(switch):
+    from trader.risk.kill_switch import KillSwitchWatchdog
+
+    assert not KillSwitchWatchdog(switch, db_url=None).check_drawdown()
+
+
+def test_watchdog_reads_equity_from_database(tmp_path):
+    """Le watchdog lit l'equity en base, sans rien demander au trader."""
+    from datetime import UTC, datetime
+
+    from trader.config import KillSwitchConfig
+    from trader.data.store import DataStore
+    from trader.risk.kill_switch import KillSwitch, KillSwitchWatchdog
+
+    db_url = f"sqlite:///{tmp_path}/wd.db"
+    store = DataStore(db_url)
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    for index, equity in enumerate([10_000.0, 10_500.0, 8_000.0]):
+        store.save_equity(equity=equity, cash=equity, timestamp=base + timedelta(hours=index))
+    store.close()
+
+    switch = KillSwitch(KillSwitchConfig(sentinel_path=str(tmp_path / "kill"), http_enabled=False))
+    watchdog = KillSwitchWatchdog(switch, db_url=db_url, max_drawdown_pct=15.0)
+    assert watchdog.check_drawdown()
+    assert switch.is_triggered()
+
+
+def test_watchdog_run_forever_stops_when_triggered(switch):
+    from trader.risk.kill_switch import KillSwitchWatchdog
+
+    switch.trigger("arret", source="test")
+    KillSwitchWatchdog(switch).run_forever(interval_sec=0.01)  # doit rendre la main

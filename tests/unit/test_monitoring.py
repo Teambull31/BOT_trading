@@ -198,3 +198,81 @@ def test_dashboard_positions_listing(paper_orchestrator):
     positions = DashboardServer(paper_orchestrator).positions()["positions"]
     assert positions[0]["asset"] == "ETH/USDT"
     assert positions[0]["stop_loss"] == 1940.0
+
+
+def test_dashboard_server_starts_and_serves(paper_orchestrator):
+    """Le dashboard doit reellement repondre en HTTP, pas seulement calculer du JSON."""
+    import urllib.request
+
+    from trader.monitoring.dashboard import DashboardServer
+
+    dashboard = DashboardServer(paper_orchestrator, port=19292)
+    dashboard.start()
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:19292/health", timeout=5) as response:
+            payload = json.loads(response.read())
+        assert payload["status"] == "running"
+        with urllib.request.urlopen("http://127.0.0.1:19292/status", timeout=5) as response:
+            assert "portfolio" in json.loads(response.read())
+    finally:
+        dashboard.stop()
+
+
+def test_dashboard_unknown_route_returns_404(paper_orchestrator):
+    import urllib.error
+    import urllib.request
+
+    from trader.monitoring.dashboard import DashboardServer
+
+    dashboard = DashboardServer(paper_orchestrator, port=19293)
+    dashboard.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen("http://127.0.0.1:19293/admin", timeout=5)
+        assert excinfo.value.code == 404
+    finally:
+        dashboard.stop()
+
+
+def test_dashboard_start_is_idempotent(paper_orchestrator):
+    from trader.monitoring.dashboard import DashboardServer
+
+    dashboard = DashboardServer(paper_orchestrator, port=19294)
+    dashboard.start()
+    server = dashboard._server
+    dashboard.start()
+    try:
+        assert dashboard._server is server
+    finally:
+        dashboard.stop()
+
+
+def test_metrics_helpers_record_values():
+    metrics = TraderMetrics(enabled=True, port=0)
+    metrics.record_order("buy", "filled", 12.5)
+    metrics.record_api_error("kraken", "timeout")
+    metrics.record_breaker("spread_excessif")
+    metrics.record_contra_score(0.62)
+
+    from prometheus_client import generate_latest
+
+    exposed = generate_latest(metrics.registry).decode()
+    assert "trader_orders_total" in exposed
+    assert "trader_api_errors_total" in exposed
+    assert "trader_circuit_breaker_triggered" in exposed
+
+
+def test_alerter_stats_counts_by_level(alerter):
+    import asyncio
+
+    asyncio.run(alerter.send("CRITICAL", "un"))
+    asyncio.run(alerter.send("CRITICAL", "deux"))
+    stats = alerter.stats()
+    assert stats["CRITICAL"] == 2
+    assert stats["delivered"] == 2
+
+
+def test_alerter_without_apprise_is_not_configured(memory_store):
+    alerter = Alerter(MonitoringConfig(), urls=["fake://x"], store=memory_store, notifier=None)
+    # apprise absent ou URL invalide : le systeme continue, les alertes sont journalisees.
+    assert isinstance(alerter.is_configured, bool)

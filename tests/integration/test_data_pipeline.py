@@ -277,3 +277,106 @@ def _self_signed_pem() -> bytes:
         .sign(key, hashes.SHA256())
     )
     return certificate.public_bytes(serialization.Encoding.PEM)
+
+
+class DerivativesExchange(FakeExchange):
+    """Faux exchange exposant funding rate, open interest et tickers."""
+
+    async def fetch_funding_rate(self, symbol):
+        return {"fundingRate": 0.00042}
+
+    async def fetch_open_interest(self, symbol):
+        return {"openInterestAmount": 123456.0}
+
+
+async def test_funding_rate_and_open_interest(settings, memory_store, candles):
+    ingester = DataIngester(
+        settings, store=memory_store, clients={"binance": DerivativesExchange(candles)}
+    )
+    assert await ingester.fetch_funding_rate("ETH/USDT") == pytest.approx(0.00042)
+    assert await ingester.fetch_open_interest("ETH/USDT") == pytest.approx(123456.0)
+    assert memory_store.load_raw("ETH/USDT", "funding_rate")
+
+
+class SpotOnlyExchange(FakeExchange):
+    """Exchange spot : ni funding rate, ni open interest."""
+
+    fetch_funding_rate = None
+    fetch_open_interest = None
+
+
+class DeadExchange(FakeExchange):
+    """Exchange injoignable sur tous les endpoints."""
+
+    async def fetch_order_book(self, symbol, limit=None):
+        raise ConnectionError("venue hors service")
+
+
+async def test_missing_derivatives_endpoints_return_none(settings, memory_store, candles):
+    """Un exchange spot ne fournit pas de funding : on retourne None, on ne plante pas."""
+    ingester = DataIngester(
+        settings, store=memory_store, clients={"binance": SpotOnlyExchange(candles)}
+    )
+    assert await ingester.fetch_funding_rate("ETH/USDT") is None
+    assert await ingester.fetch_open_interest("ETH/USDT") is None
+
+
+async def test_ticker_prices(settings, memory_store, candles):
+    ingester = DataIngester(
+        settings, store=memory_store, clients={"binance": FakeExchange(candles)}
+    )
+    prices = await ingester.fetch_ticker_prices(["ETH/USDT"])
+    assert prices["ETH/USDT"] > 0
+
+
+async def test_cross_exchange_prices(settings, memory_store, candles):
+    """Base de l'arbitrage : comparer le meme actif sur plusieurs exchanges."""
+    ingester = DataIngester(
+        settings,
+        store=memory_store,
+        clients={
+            "binance": FakeExchange(candles),
+            "kraken": FakeExchange(candles),
+        },
+    )
+    quotes = await ingester.fetch_cross_exchange_prices("ETH/USDT", exchanges=["binance", "kraken"])
+    assert set(quotes) == {"binance", "kraken"}
+    assert all(quote["bid"] < quote["ask"] for quote in quotes.values())
+
+
+async def test_cross_exchange_survives_one_dead_venue(settings, memory_store, candles):
+    ingester = DataIngester(
+        settings,
+        store=memory_store,
+        clients={
+            "binance": FakeExchange(candles),
+            "kraken": DeadExchange(candles),
+        },
+        max_retries=1,
+        backoff_base_sec=0.01,
+    )
+    quotes = await ingester.fetch_cross_exchange_prices("ETH/USDT", exchanges=["binance", "kraken"])
+    assert set(quotes) == {"binance"}
+
+
+async def test_unknown_method_is_permanent_error(settings, memory_store, candles):
+    ingester = DataIngester(
+        settings, store=memory_store, clients={"binance": FakeExchange(candles)}
+    )
+    with pytest.raises(PermanentError, match="ne supporte pas"):
+        await ingester._call("binance", "fetch_something_impossible")
+
+
+async def test_close_only_closes_owned_clients(settings, memory_store, candles):
+    """Un client injecte appartient a l'appelant : l'ingester ne le ferme pas."""
+    exchange = FakeExchange(candles)
+    ingester = DataIngester(settings, store=memory_store, clients={"binance": exchange})
+    await ingester.close()
+    assert not exchange.closed
+
+
+async def test_empty_exchange_response_yields_empty_frame(settings, memory_store):
+    ingester = DataIngester(settings, store=memory_store, clients={"binance": FakeExchange([])})
+    result = await ingester.fetch_ohlcv("ETH/USDT", "1h", limit=10)
+    assert result.frame.empty
+    assert not result.report.is_usable

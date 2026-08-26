@@ -113,3 +113,35 @@ def test_all_exchange_names_include_primary_first():
     names = settings.exchanges.all_names
     assert names[0] == settings.exchanges.primary
     assert len(names) == len(set(names))
+
+
+def test_timeframe_helpers():
+    """Les conversions de timeframe sont la base de toutes les annualisations."""
+    from trader.utils.time_utils import (
+        annualization_factor,
+        bars_per_day,
+        floor_to_timeframe,
+        from_millis,
+        timeframe_to_seconds,
+        timeframe_to_timedelta,
+        to_millis,
+        to_utc,
+        utc_now,
+    )
+
+    assert timeframe_to_seconds("1h") == 3600
+    assert timeframe_to_timedelta("1d").days == 1
+    assert bars_per_day("1h") == 24.0
+    assert annualization_factor("1d") == 365.0
+
+    with pytest.raises(ValueError, match="timeframe inconnu"):
+        timeframe_to_seconds("3 semaines")
+
+    now = utc_now()
+    assert from_millis(to_millis(now)).replace(microsecond=0) == now.replace(microsecond=0)
+
+    from datetime import datetime
+
+    naive = datetime(2024, 1, 1, 12, 34)
+    assert to_utc(naive).tzinfo is not None
+    assert floor_to_timeframe(to_utc(naive), "1h").minute == 0
