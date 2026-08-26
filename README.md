@@ -258,3 +258,31 @@ tests/            unit, integration, backtest
 ---
 
 *Le capital engage doit etre de l'argent que vous pouvez perdre integralement.*
+
+---
+
+## Simulation actions (module `equities`)
+
+Backtest de suivi de tendance sur actions, independant du moteur crypto mais
+soumis aux memes exigences : aucune lecture du futur, frais systematiques,
+comparaison au buy & hold.
+
+```bash
+python scripts/equity_sim.py --walk-forward        # simulation + validation
+python scripts/equity_sim.py --start 2026-01-01 --end 2026-08-25 --capital 1000
+python scripts/equity_sim.py --extra NVDA,XOM      # imposer d'autres titres
+```
+
+**Methode.** L'univers est selectionne sur des donnees strictement anterieures a
+la fenetre evaluee, avec un score qui combine decorrelation et tendancialite —
+un titre decorrele mais qui ne tend jamais est inutile a un systeme de tendance.
+La configuration a ete arretee sur 2023-10 → 2025-12 (in-sample) puis appliquee
+telle quelle a la fenetre evaluee, qui n'a servi a aucun choix de parametre.
+
+**Trois garde-fous verifies a chaque execution** : test de causalite des
+indicateurs (recalcul sur prefixe), execution a l'ouverture de la seance
+suivante, frais et slippage sur chaque ordre.
+
+**Limites.** Cours non ajustes des dividendes ; risque de change EUR/USD non
+modelise ; fractions d'actions supposees disponibles (indispensable avec 1000 €
+sur des titres a plusieurs centaines de dollars).
