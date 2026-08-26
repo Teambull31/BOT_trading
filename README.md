@@ -24,7 +24,7 @@ exige une validation statistique explicite (voir la checklist go-live).
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-pytest -q                                   # 254 tests
+pytest -q                                   # 359 tests, 91 % de couverture
 python -m trader.main paper                 # paper trading
 python -m trader.main status                # etat courant
 python scripts/backtest.py --walk-forward   # backtest walk-forward
