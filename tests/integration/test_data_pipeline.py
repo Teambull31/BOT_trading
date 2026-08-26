@@ -187,3 +187,93 @@ async def test_rate_limiter_spaces_calls(settings, memory_store, candles):
     await ingester.fetch_ohlcv("ETH/USDT", "1h", limit=10)
     await ingester.fetch_ohlcv("ETH/USDT", "1h", limit=10)
     assert asyncio.get_running_loop().time() - start >= 0.05
+
+
+class FakeCcxtClient:
+    """Client nu, pour verifier l'application des reglages reseau."""
+
+    id = "fake"
+
+    def __init__(self) -> None:
+        self.aiohttp_trust_env = False
+        self.httpsProxy = None  # noqa: N815 - nom impose par ccxt
+        self.cafile = None
+        self.ssl_context = None
+
+
+def test_network_settings_apply_proxy_and_ca(monkeypatch, tmp_path):
+    """aiohttp ignore HTTPS_PROXY et SSL_CERT_FILE : il faut les lui passer."""
+    bundle = tmp_path / "ca-bundle.crt"
+    bundle.write_bytes(_self_signed_pem())
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+
+    client = FakeCcxtClient()
+    DataIngester._apply_network_settings(client, "kraken")
+
+    assert client.aiohttp_trust_env is True
+    assert client.httpsProxy == "http://127.0.0.1:8888"
+    assert client.cafile == str(bundle)
+    # La verification TLS n'est jamais desactivee, seulement redirigee.
+    assert client.ssl_context is not None
+
+
+def test_network_settings_without_proxy(monkeypatch):
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+    client = FakeCcxtClient()
+    DataIngester._apply_network_settings(client, "kraken")
+    assert client.httpsProxy is None
+    assert client.aiohttp_trust_env is True
+
+
+def test_missing_ca_bundle_is_ignored(monkeypatch, tmp_path):
+    """Un chemin de bundle invalide ne doit pas casser la construction du client."""
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "inexistant.crt"))
+    client = FakeCcxtClient()
+    DataIngester._apply_network_settings(client, "kraken")
+    assert client.cafile is None
+
+
+def test_unreadable_ca_bundle_falls_back_without_disabling_tls(monkeypatch, tmp_path):
+    """Un bundle illisible fait retomber sur le magasin systeme, jamais sur
+    une verification TLS desactivee."""
+    broken = tmp_path / "broken.crt"
+    broken.write_text("ceci n'est pas un certificat")
+    monkeypatch.setenv("SSL_CERT_FILE", str(broken))
+
+    client = FakeCcxtClient()
+    DataIngester._apply_network_settings(client, "kraken")
+    assert client.cafile is None
+    assert client.ssl_context is None  # ccxt utilisera son contexte par defaut
+    assert getattr(client, "verify", True) is not False
+
+
+def _self_signed_pem() -> bytes:
+    """Certificat auto-signe minimal, genere a la volee pour les tests."""
+    import datetime
+    import ipaddress  # noqa: F401 - importe pour la disponibilite de cryptography
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")])
+    now = datetime.datetime.now(datetime.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)

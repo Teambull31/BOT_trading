@@ -117,6 +117,10 @@ le fait tout seul.
 Les secrets (cles API, tokens Telegram) passent **uniquement** par variables
 d'environnement : `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `TRADER_ALERT_URLS`.
 
+Derriere un proxy sortant, `HTTPS_PROXY` et `SSL_CERT_FILE` sont detectes et
+transmis explicitement aux clients ccxt : aiohttp, contrairement a curl, ne lit
+pas ces variables tout seul. La verification TLS n'est jamais desactivee.
+
 ---
 
 ## Passage en live
@@ -221,6 +225,10 @@ Enumerees ici plutot que decouvertes en production :
   correspondante n'est pas implementee.
 - **Pas de gestion multi-actifs correlee.** L'exposition totale est plafonnee,
   mais aucun controle de correlation entre positions ouvertes n'est applique.
+- **Binance est geo-bloque depuis certains hebergeurs** (reponse HTTP 451).
+  Le systeme fonctionne avec n'importe quel exchange supporte par ccxt : il
+  suffit de changer `exchanges.primary` dans la configuration. Kraken a ete
+  valide en conditions reelles.
 
 ---
 

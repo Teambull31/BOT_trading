@@ -96,3 +96,20 @@ def test_go_live_criteria_cannot_be_weakened():
         PaperTradingConfig(min_sharpe_for_live=0.1)
     with pytest.raises(ValidationError):
         PaperTradingConfig(min_trades_for_live=10)
+
+
+def test_exchange_settings_fallback():
+    """Un exchange non declare dans la config recoit des valeurs par defaut sures."""
+    settings = load_settings("config/default.toml")
+    unknown = settings.exchanges.settings_for("exchange_inconnu")
+    assert unknown.sandbox is True  # par defaut on ne touche jamais au reel
+    assert unknown.api_key_env is None
+    binance = settings.exchanges.settings_for("binance")
+    assert binance.api_key_env == "BINANCE_API_KEY"
+
+
+def test_all_exchange_names_include_primary_first():
+    settings = load_settings("config/default.toml")
+    names = settings.exchanges.all_names
+    assert names[0] == settings.exchanges.primary
+    assert len(names) == len(set(names))
