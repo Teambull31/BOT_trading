@@ -47,6 +47,10 @@ ignore = ["B008", "N818", "UP042"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Les suites de backtest suivent la nomenclature du cahier des charges
+# (walk_forward.py, regime_backtest.py) et non le prefixe test_*.
+python_files = ["test_*.py", "walk_forward.py", "regime_backtest.py"]
+markers = ["slow: test long (backtest complet, reentrainement de modeles)"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
