@@ -1,0 +1,27 @@
+# Override LIVE — VERROUILLE PAR DEFAUT.
+#
+# Ce fichier ne suffit PAS a passer en live : il faut aussi
+#   1. valider `python scripts/go_live_checklist.py` (tous les criteres au vert)
+#   2. lancer explicitement avec `--config config/live.toml --i-understand-the-risk`
+#
+# Capital alloue = argent que l'on peut perdre INTEGRALEMENT.
+
+[general]
+mode = "live"
+log_level = "INFO"
+initial_capital = 500.0
+
+[exchanges.binance]
+sandbox = false
+
+[risk]
+# En live on demarre encore plus conservateur que les limites en dur.
+max_position_pct = 1.0
+max_exposure_pct = 10.0
+max_drawdown_daily_pct = 2.0
+max_drawdown_weekly_pct = 4.0
+max_drawdown_total_pct = 10.0
+max_concurrent_positions = 3
+
+[execution]
+simulate_latency = false

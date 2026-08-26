@@ -1,0 +1,161 @@
+# Configuration par defaut de l'agent de trading adaptatif.
+# Les HARD LIMITS (max 2 % par position, -15 % de drawdown total, DevilAdvocate actif)
+# sont dans le code (src/trader/config.py) et ne peuvent pas etre relaches ici.
+
+[general]
+mode = "paper"
+base_currency = "USDT"
+log_level = "INFO"
+timezone = "UTC"
+initial_capital = 500.0
+loop_interval_sec = 60
+heartbeat_path = "/tmp/trader_heartbeat"
+
+[exchanges]
+primary = "binance"
+secondary = ["kraken", "bybit"]
+
+[exchanges.binance]
+rate_limit_ms = 100
+sandbox = true
+api_key_env = "BINANCE_API_KEY"
+api_secret_env = "BINANCE_API_SECRET"
+
+[exchanges.kraken]
+rate_limit_ms = 200
+sandbox = true
+
+[exchanges.bybit]
+rate_limit_ms = 150
+sandbox = true
+
+[data]
+timeframes = ["1m", "5m", "15m", "1h", "4h", "1d"]
+primary_timeframe = "1h"
+history_days = 180
+order_book_depth = 20
+db_url = "sqlite:///data/trader.db"
+
+[universe]
+# On cible des niches a faible competition, pas les majors ultra-competitifs.
+assets = ["ETH/USDT"]
+max_assets = 10
+
+[regime]
+hmm_states = 6
+retrain_interval_days = 7
+min_confidence = 0.6
+min_agreement = 0.67
+lookback_days = 90
+adx_trend_threshold = 25.0
+adx_range_threshold = 20.0
+hurst_trend_threshold = 0.6
+hurst_revert_threshold = 0.4
+crisis_vol_sigma = 2.0
+
+[ensemble]
+min_active_strategies = 2
+max_weight_single = 0.40
+consensus_threshold = 0.6
+max_signal_dispersion = 1.0
+shadow_mode_days = 14
+perf_window_days = 30
+flip_flop_penalty = 0.2
+diversification_bonus = 0.2
+
+[risk]
+max_position_pct = 2.0
+max_exposure_pct = 20.0
+max_drawdown_daily_pct = 3.0
+max_drawdown_weekly_pct = 5.0
+max_drawdown_total_pct = 15.0
+daily_pause_hours = 24
+weekly_pause_hours = 72
+max_orders_per_hour = 10
+max_orders_per_day = 50
+cooldown_same_asset_min = 5
+min_risk_reward = 1.5
+max_stop_distance_pct = 5.0
+max_concurrent_positions = 5
+kelly_fraction = 0.5
+
+[risk.circuit_breakers]
+max_spread_pct = 2.0
+max_api_latency_sec = 5.0
+max_price_move_5min_pct = 10.0
+pause_duration_min = 30
+max_execution_retries = 3
+
+[risk.uncertain_regime]
+exposure_multiplier = 0.5
+
+[risk.crisis_regime]
+allow_new_positions = false
+close_existing = true
+close_speed = "gradual"
+
+[devil_advocate]
+abort_threshold = 0.7
+reduce_threshold = 0.4
+reduce_factor = 0.5
+enabled = true
+
+[decay_detection]
+sharpe_decay_ratio = 0.5
+min_hit_rate_14d = 0.45
+min_profit_factor_14d = 1.0
+max_consecutive_losses_alert = 5
+max_consecutive_losses = 8
+check_interval_hours = 6
+min_trades_for_verdict = 10
+dead_period_days = 30
+
+[retraining]
+train_window_days = 90
+validation_window_days = 14
+test_window_days = 7
+purge_gap_days = 2
+min_oos_ratio = 0.70
+schedule = "weekly"
+max_params_per_strategy = 6
+artifacts_dir = "artifacts/retraining"
+
+[execution]
+default_order_type = "limit"
+fill_timeout_sec = 60
+min_fill_pct = 0.80
+max_retries = 3
+retry_backoff_sec = 1.0
+slippage_model = "spread_plus_impact"
+fixed_slippage_bps = 5.0
+taker_fee_bps = 7.5
+maker_fee_bps = 2.0
+simulate_latency = true
+latency_ms_range = [100, 500]
+partial_fill_volume_pct = 5.0
+
+[monitoring]
+prometheus_port = 9090
+prometheus_enabled = true
+alert_channels = ["telegram"]
+alert_urls_env = "TRADER_ALERT_URLS"
+alert_rate_limit_info_sec = 300
+daily_report_hour = 8
+
+[paper_trading]
+min_days_before_live = 30
+min_sharpe_for_live = 0.8
+min_trades_for_live = 50
+max_drawdown_for_live_pct = 10.0
+min_profit_factor_for_live = 1.2
+max_backtest_divergence_pct = 30.0
+max_slippage_divergence_pct = 50.0
+max_live_capital = 500.0
+
+[kill_switch]
+sentinel_path = "/tmp/trader_kill"
+http_enabled = true
+http_host = "127.0.0.1"
+http_port = 9091
+watchdog_timeout_sec = 60
+check_interval_sec = 30

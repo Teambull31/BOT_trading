@@ -1,0 +1,12 @@
+# Override paper trading : sandbox partout, verbosite accrue.
+
+[general]
+mode = "paper"
+log_level = "INFO"
+initial_capital = 500.0
+
+[exchanges.binance]
+sandbox = true
+
+[execution]
+simulate_latency = true
