@@ -306,6 +306,15 @@ telle quelle a la fenetre evaluee, qui n'a servi a aucun choix de parametre.
 indicateurs (recalcul sur prefixe), execution a l'ouverture de la seance
 suivante, frais et slippage sur chaque ordre.
 
+### Pistes mesurees puis ecartees
+
+Consignees ici pour ne pas etre re-testees indefiniment. Une piste rejetee est
+un resultat, pas un echec.
+
+| Piste | Mesure in-sample | Verdict |
+| --- | --- | --- |
+| Delai de carence apres stop (`reentry_cooldown_days`) | 7 valeurs x 5 univers sur 2023-10 → 2025-12 | **Rejetee.** Courbe non monotone (0 bon, 3 a 20 moins bons, 30 meilleur) : signature du bruit. Le delai de 30 jours ne gagne que 2 semestres sur 5, tout son avantage venant d'un seul marche sans direction. Le parametre reste disponible, desactive par defaut. |
+
 **Limites.** Cours non ajustes des dividendes ; risque de change EUR/USD non
 modelise ; fractions d'actions supposees disponibles (indispensable avec 1000 €
 sur des titres a plusieurs centaines de dollars).

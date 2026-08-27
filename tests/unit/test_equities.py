@@ -283,6 +283,38 @@ def test_position_limit_is_enforced(universe):
         assert second_entry >= first_exit
 
 
+def test_reentry_cooldown_is_disabled_by_default(universe):
+    """Le delai de carence est neutre par defaut : aucun changement de resultat."""
+    start, end = window_of(universe, last_days=300)
+    risk = RiskParams(sizing_mode="target_weight", max_position_pct=33.0)
+    base = EquityBacktester(params=TrendParams(entry_mode="trend"), risk=risk).run(
+        universe, start, end, 1000.0
+    )
+    explicit_zero = EquityBacktester(
+        params=TrendParams(entry_mode="trend", reentry_cooldown_days=0), risk=risk
+    ).run(universe, start, end, 1000.0)
+    assert base.final_equity == pytest.approx(explicit_zero.final_equity)
+
+
+def test_reentry_cooldown_spaces_out_repeat_entries(universe):
+    """Avec un delai actif, un titre stoppe n'est pas rachete avant l'echeance."""
+    start, end = window_of(universe, last_days=300)
+    cooldown = 20
+    report = EquityBacktester(
+        params=TrendParams(entry_mode="trend", reentry_cooldown_days=cooldown),
+        risk=RiskParams(sizing_mode="target_weight", max_position_pct=33.0),
+    ).run(universe, start, end, 1000.0)
+
+    sessions = report.equity.index
+    for symbol in {trade.symbol for trade in report.trades}:
+        legs = sorted((t.entry_date, t.exit_date) for t in report.trades if t.symbol == symbol)
+        for (_, exit_date), (next_entry, _) in zip(legs, legs[1:], strict=False):
+            elapsed = len(sessions[(sessions > exit_date) & (sessions <= next_entry)])
+            assert elapsed >= cooldown, (
+                f"{symbol} rachete apres {elapsed} seances, delai attendu {cooldown}"
+            )
+
+
 def test_benchmark_is_computed(universe):
     start, end = window_of(universe)
     report = EquityBacktester().run(universe, start, end, 1000.0)

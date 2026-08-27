@@ -249,6 +249,7 @@ class EquityBacktester:
         equity_points: list[tuple[datetime, float]] = []
         total_costs = 0.0
         pending_entries: list[str] = []
+        last_exit_index: dict[str, int] = {}
 
         for index in range(len(calendar) - 1):
             today = calendar[index]
@@ -275,11 +276,12 @@ class EquityBacktester:
                     cash += proceeds
                     total_costs += cost
                     del positions[symbol]
+                    last_exit_index[symbol] = index
 
             # 3. Decider des entrees de demain, sur les donnees closes ce soir.
             equity = cash + self._positions_value(positions, frames, today)
             pending_entries = self._select_entries(
-                frames, indicators, positions, today, equity, cash
+                frames, indicators, positions, today, equity, cash, last_exit_index, index
             )
             equity_points.append((today, equity))
 
@@ -338,19 +340,30 @@ class EquityBacktester:
         today: datetime,
         equity: float,
         cash: float,
+        last_exit_index: dict[str, int] | None = None,
+        day_index: int = 0,
     ) -> list[str]:
         """Selectionne les titres a acheter a l'ouverture suivante.
 
         En cas de signaux simultanes, on privilegie la tendance la plus etablie
         (ADX le plus eleve) : arbitrer par ordre alphabetique introduirait un
         biais silencieux vers le debut de l'alphabet.
+
+        Un titre stoppe recemment est ecarte pendant `reentry_cooldown_days`
+        seances : le racheter immediatement revient a repayer les frais pour
+        reprendre le mouvement qui vient justement de faire sauter le stop.
         """
         if len(positions) >= self.risk.max_positions:
             return []
 
+        cooldown = self.params.reentry_cooldown_days
+        exits = last_exit_index or {}
+
         candidates: list[tuple[float, str]] = []
         for symbol in frames:
             if symbol in positions or symbol not in indicators:
+                continue
+            if cooldown > 0 and day_index - exits.get(symbol, -(10**9)) < cooldown:
                 continue
             history = indicators[symbol].loc[:today]
             if len(history) < self.params.min_history:

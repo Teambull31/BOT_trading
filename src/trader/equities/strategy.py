@@ -45,6 +45,26 @@ class TrendParams:
     adx_period: int = 14
     min_adx: float = 15.0
     min_history: int = 210
+    reentry_cooldown_days: int = 0
+    """Seances d'attente avant de racheter un titre qui vient d'etre stoppe.
+
+    Laisse a 0 (desactive) apres mesure. L'intuition est pourtant solide : sans
+    delai, un titre qui oscille autour de sa moyenne longue est rachete des le
+    lendemain de sa sortie, stoppe a nouveau, rachete encore, chaque aller-retour
+    coutant des frais et une petite perte.
+
+    Le balayage in-sample (2023-10 -> 2025-12, cinq univers, valeurs 0/3/5/10/15/
+    20/30) donne une courbe NON MONOTONE : 0 est bon, 3 a 20 sont tous moins bons,
+    30 est le meilleur. Une vraie amelioration serait progressive ; cette forme
+    en U signale du bruit. Verification par sous-periodes : le delai de 30 jours
+    ne gagne que 2 semestres sur 5, et tout son avantage vient de 2024H2, un
+    marche sans direction ou un delai aide mecaniquement. En periode de tendance
+    il fait manquer des reprises et coute.
+
+    Retenir 30 reviendrait a choisir la meilleure de sept valeurs testees sur une
+    seule fenetre : exactement l'optimisation qui produit une belle courbe
+    passee et aucune performance future.
+    """
     entry_mode: str = "breakout"
     """'breakout' : cassure Donchian. 'trend' : rester investi au-dessus de la SMA200.
 
