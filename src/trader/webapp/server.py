@@ -18,6 +18,7 @@ Dans les deux cas : argent fictif, aucun ordre reel, aucun courtier.
 
 from __future__ import annotations
 
+import math
 import re
 from contextvars import ContextVar
 from pathlib import Path
@@ -27,9 +28,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from trader.coach.account import InsufficientFunds, PaperAccount
+from trader.coach.account import ClosedTrade, InsufficientFunds, PaperAccount
 from trader.coach.advisor import TradePlan, review_plan, suggest_size
-from trader.coach.curriculum import evaluate_progress
+from trader.coach.curriculum import MIN_PLANNED_R, evaluate_progress, planned_ratio
 from trader.coach.debrief import debrief_trade, recurring_patterns
 from trader.coach.quotes import QuoteError, fetch_quote, fetch_quotes
 from trader.logging_setup import get_logger
@@ -104,6 +105,43 @@ class _RequestAccount:
 
     def __getattr__(self, name: str) -> object:
         return getattr(_CURRENT.get(), name)
+
+
+def _history_entry(trade: ClosedTrade) -> dict:
+    """Un trade cloture, tel que l'historique de l'interface l'affiche.
+
+    Le "plan" est ce que l'eleve avait mis EN FACE de son stop avant d'entrer :
+    un objectif, un stop suiveur, ou rien. Le palier 5 le compte globalement ;
+    l'historique doit pouvoir designer les trades concernes, sinon le reproche
+    reste abstrait.
+
+    `planned_ratio` vaut None quand le gain n'a pas de plafond chiffrable —
+    stop suiveur, ou stop deja remonte au-dessus de l'entree. On ne renvoie
+    jamais l'infini : `json.dumps` l'ecrirait `Infinity`, que `JSON.parse`
+    refuse. `planned_ok` porte le seuil cote serveur, pour qu'il ne soit pas
+    recopie dans le JavaScript et ne puisse pas diverger.
+    """
+    ratio = planned_ratio(trade)
+    unbounded = ratio is not None and math.isinf(ratio)
+    return {
+        "id": trade.id,
+        "symbol": trade.symbol,
+        "entry_price": round(trade.entry_price, 4),
+        "exit_price": round(trade.exit_price, 4),
+        "shares": round(trade.shares, 6),
+        "pnl": round(trade.pnl, 2),
+        "return_pct": round(trade.return_pct, 2),
+        "holding_days": trade.holding_days,
+        "closed_at": trade.closed_at,
+        "exit_reason": trade.exit_reason,
+        "is_win": trade.is_win,
+        "respected_stop": trade.respected_stop,
+        "stop_moved_against": trade.stop_moved_against,
+        "plan": "aucun" if ratio is None else "suiveur" if trade.trailing_pct else "objectif",
+        "trailing_pct": trade.trailing_pct,
+        "planned_ratio": None if ratio is None or unbounded else round(ratio, 2),
+        "planned_ok": ratio is not None and ratio >= MIN_PLANNED_R,
+    }
 
 
 def create_app(
@@ -234,26 +272,7 @@ def create_app(
     def get_history(limit: int = 25) -> dict:
         """Historique des trades, du plus recent au plus ancien."""
         trades = sorted(account.state.history, key=lambda t: t.closed_at, reverse=True)
-        return {
-            "trades": [
-                {
-                    "id": trade.id,
-                    "symbol": trade.symbol,
-                    "entry_price": round(trade.entry_price, 4),
-                    "exit_price": round(trade.exit_price, 4),
-                    "shares": round(trade.shares, 6),
-                    "pnl": round(trade.pnl, 2),
-                    "return_pct": round(trade.return_pct, 2),
-                    "holding_days": trade.holding_days,
-                    "closed_at": trade.closed_at,
-                    "exit_reason": trade.exit_reason,
-                    "is_win": trade.is_win,
-                    "respected_stop": trade.respected_stop,
-                    "stop_moved_against": trade.stop_moved_against,
-                }
-                for trade in trades[:limit]
-            ]
-        }
+        return {"trades": [_history_entry(trade) for trade in trades[:limit]]}
 
     @app.get("/api/quotes")
     def get_quotes(symbols: str = "") -> dict:

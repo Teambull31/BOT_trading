@@ -220,6 +220,16 @@ function renderPatterns(patterns) {
       .join('');
 }
 
+/** Ce que l'eleve avait mis en face de son stop, avant d'entrer. */
+function planLabel(t) {
+  if (t.plan === 'suiveur') return `suiveur ${t.trailing_pct} %`;
+  if (t.plan === 'aucun') return 'sans objectif ni suiveur';
+  // `planned_ratio` est nul quand le gain visé n'a pas de plafond chiffrable :
+  // stop déjà remonté au-dessus de l'entrée, il n'y a plus rien à diviser.
+  if (t.planned_ratio === null) return 'objectif sans risque au stop';
+  return `objectif ${t.planned_ratio.toFixed(1)} × le risque`;
+}
+
 async function renderHistory() {
   const { trades } = await api('/api/history');
   if (!trades.length) {
@@ -231,10 +241,15 @@ async function renderHistory() {
       const flags = [];
       if (t.stop_moved_against) flags.push('stop élargi');
       if (!t.respected_stop) flags.push('perte hors enveloppe');
+      // Le palier « couper court, laisser courir » compte les trades sans plan
+      // de sortie ; l'historique doit dire lesquels, sinon le reproche est
+      // abstrait. Le seuil reste au serveur (`planned_ok`) : le recopier ici
+      // laisserait les deux versions diverger en silence.
+      if (!t.planned_ok) flags.push(planLabel(t));
       return `<div class="hist-row" onclick="showDebrief('${t.id}')">
         <div class="wl-sym">${t.symbol}</div>
         <div>
-          <div class="small">${euro(t.entry_price)} → ${euro(t.exit_price)} · ${t.holding_days} j</div>
+          <div class="small">${euro(t.entry_price)} → ${euro(t.exit_price)} · ${t.holding_days} j · ${planLabel(t)}</div>
           <div class="hist-flags">${flags.length ? '⚠ ' + flags.join(' · ') : t.exit_reason}</div>
         </div>
         <div class="hist-pnl ${cls(t.pnl)}">${signed(t.pnl)} €</div>

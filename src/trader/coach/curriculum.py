@@ -134,8 +134,12 @@ def _check_patience(state: AccountState) -> tuple[bool, str]:
     return True, f"Jamais plus de {busiest} trades par semaine."
 
 
-def _planned_ratio(trade: ClosedTrade) -> float | None:
+def planned_ratio(trade: ClosedTrade) -> float | None:
     """Gain visé rapporté a la perte acceptée, tel qu'il etait decide A L'ENTREE.
+
+    Public : l'historique de l'interface s'en sert pour montrer trade par trade
+    ce que le palier 5 reproche globalement. Un palier qui compte des fautes
+    sans dire lesquelles n'apprend rien.
 
     `None` quand rien n'a ete planifie en face du stop : ni objectif, ni stop
     suiveur. Ce trade-la n'a pas de sortie prevue par le haut, elle sera
@@ -159,7 +163,7 @@ def _check_asymmetry(state: AccountState) -> tuple[bool, str]:
     trades = state.history
     if len(trades) < 12:
         return False, f"{len(trades)}/12 trades clôturés."
-    planned = [(trade, _planned_ratio(trade)) for trade in trades]
+    planned = [(trade, planned_ratio(trade)) for trade in trades]
     unplanned = [trade for trade, ratio in planned if ratio is None]
     if unplanned:
         symbols = ", ".join(sorted({trade.symbol for trade in unplanned}))
