@@ -1,0 +1,298 @@
+/* Coach Trading — feuille de style unique, sans dependance externe. */
+
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #1c2230;
+  --border: #2a3140;
+  --text: #e6edf3;
+  --muted: #8b96a5;
+  --accent: #4d9fff;
+  --accent-soft: rgba(77, 159, 255, 0.12);
+  --win: #3fb950;
+  --loss: #f85149;
+  --warn: #d29922;
+  --radius: 12px;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fa;
+    --surface: #ffffff;
+    --surface-2: #f0f3f6;
+    --border: #d8dee4;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #0969da;
+    --accent-soft: rgba(9, 105, 218, 0.08);
+    --win: #1a7f37;
+    --loss: #cf222e;
+    --warn: #9a6700;
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+.error { color: var(--loss); font-size: 14px; min-height: 20px; margin: 6px 0 0; }
+
+/* ------------------------------------------------------------------ topbar */
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 16px 24px;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo {
+  width: 38px; height: 38px; display: grid; place-items: center;
+  background: var(--accent); color: #fff; border-radius: 10px; font-size: 17px;
+}
+.topbar h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.sub { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+.rank-badge {
+  display: flex; flex-direction: column; align-items: flex-end;
+  padding: 7px 14px; background: var(--accent-soft);
+  border: 1px solid var(--accent); border-radius: 10px;
+}
+.rank-name { font-weight: 650; font-size: 14px; color: var(--accent); }
+.rank-progress { font-size: 11.5px; color: var(--muted); }
+
+/* -------------------------------------------------------------- onboarding */
+
+.onboarding { display: grid; place-items: center; padding: 48px 20px; }
+.onboarding-card { max-width: 560px; }
+.onboarding-card h2 { margin-top: 0; font-size: 22px; }
+.amount-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0 14px; }
+.field-row { display: flex; gap: 10px; }
+.field-row input { flex: 1; }
+
+/* ------------------------------------------------------------------ layout */
+
+main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+}
+.card h3 { margin: 0 0 14px; font-size: 15.5px; font-weight: 620; }
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------------------------- stats */
+
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.stat {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px;
+}
+.stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-value { font-size: 22px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.stat-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.pos { color: var(--win); } .neg { color: var(--loss); }
+
+/* ----------------------------------------------------------------- mission */
+
+.mission { border-left: 3px solid var(--accent); }
+.mission-tag {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--accent); font-weight: 650;
+}
+.mission h2 { margin: 6px 0 8px; font-size: 19px; }
+.mission-goal { margin: 0 0 12px; font-size: 15px; }
+.mission-why {
+  background: var(--surface-2); border-radius: 8px; padding: 12px 14px;
+  font-size: 13.5px; color: var(--muted); line-height: 1.6;
+}
+.mission-detail { margin: 12px 0 0; font-size: 13.5px; color: var(--accent); font-weight: 550; }
+
+/* -------------------------------------------------------------------- tabs */
+
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); padding: 10px 16px; cursor: pointer;
+  font-size: 14px; font-weight: 550; font-family: inherit;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.count {
+  background: var(--surface-2); border-radius: 10px; padding: 1px 7px;
+  font-size: 11.5px; margin-left: 4px;
+}
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* --------------------------------------------------------------- watchlist */
+
+.watchlist { display: flex; flex-direction: column; gap: 6px; }
+.wl-row {
+  display: grid; grid-template-columns: 62px 1fr auto; gap: 10px; align-items: center;
+  padding: 9px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background 0.12s;
+}
+.wl-row:hover { background: var(--surface-2); border-color: var(--border); }
+.wl-sym { font-weight: 650; font-size: 14px; }
+.wl-name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-price { text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; }
+.wl-chg { font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------------------------- form */
+
+.form { display: flex; flex-direction: column; gap: 12px; }
+label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+input, select {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; color: var(--text); font-size: 14.5px; font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+
+button {
+  border-radius: 8px; padding: 10px 16px; font-size: 14px;
+  font-weight: 550; cursor: pointer; font-family: inherit; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text);
+}
+button:hover { filter: brightness(1.12); }
+.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ghost { background: transparent; }
+.wide { width: 100%; }
+.chip { background: var(--surface-2); }
+.chip.small { padding: 5px 11px; font-size: 13px; }
+.chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.price-hint { font-size: 13px; color: var(--accent); min-height: 18px; }
+.sizing { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.risk-chips { display: flex; gap: 5px; }
+
+/* ------------------------------------------------------------------ conseils */
+
+.review-metrics {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px; margin-bottom: 16px;
+}
+.rm { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.rm-label { font-size: 11.5px; color: var(--muted); }
+.rm-value { font-size: 17px; font-weight: 620; font-variant-numeric: tabular-nums; }
+
+.advices { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.advice {
+  border-left: 3px solid var(--border); border-radius: 0 8px 8px 0;
+  padding: 11px 14px; background: var(--surface-2);
+}
+.advice.bloquant { border-left-color: var(--loss); }
+.advice.attention { border-left-color: var(--warn); }
+.advice.ok { border-left-color: var(--win); }
+.advice.info { border-left-color: var(--accent); }
+.advice-title { font-weight: 620; font-size: 14px; margin-bottom: 3px; }
+.advice-msg { font-size: 13.5px; color: var(--muted); line-height: 1.6; }
+.review-actions { display: flex; gap: 10px; }
+
+/* --------------------------------------------------------------- positions */
+
+.position {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; margin-bottom: 12px;
+}
+.pos-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+.pos-sym { font-size: 18px; font-weight: 680; }
+.pos-pnl { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.pos-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 10px; margin-bottom: 14px;
+}
+.pg-label { font-size: 11.5px; color: var(--muted); }
+.pg-value { font-size: 14.5px; font-variant-numeric: tabular-nums; }
+.stop-bar { height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
+.stop-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.pos-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pos-actions input { width: 110px; padding: 7px 10px; font-size: 13.5px; }
+.alert-stop { color: var(--loss); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+
+/* ----------------------------------------------------------------- niveaux */
+
+.level {
+  display: flex; gap: 14px; padding: 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); margin-bottom: 10px;
+}
+.level.done { border-color: var(--win); }
+.level.current { border-color: var(--accent); background: var(--accent-soft); }
+.level-num {
+  width: 34px; height: 34px; flex-shrink: 0; display: grid; place-items: center;
+  border-radius: 50%; background: var(--surface-2); font-weight: 650; font-size: 14px;
+}
+.level.done .level-num { background: var(--win); color: #fff; }
+.level.current .level-num { background: var(--accent); color: #fff; }
+.level-title { font-weight: 620; font-size: 15px; margin-bottom: 3px; }
+.level-goal { font-size: 13.5px; color: var(--muted); margin-bottom: 6px; }
+.level-why { font-size: 12.5px; color: var(--muted); line-height: 1.6; font-style: italic; }
+.level-detail { font-size: 13px; margin-top: 7px; font-weight: 550; }
+
+/* -------------------------------------------------------------- historique */
+
+.hist-row {
+  display: grid; grid-template-columns: 70px 1fr auto auto; gap: 12px;
+  align-items: center; padding: 11px 4px; border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.hist-row:hover { background: var(--surface-2); }
+.hist-row:last-child { border-bottom: none; }
+.hist-flags { font-size: 12px; color: var(--muted); }
+.hist-pnl { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ------------------------------------------------------------------- modal */
+
+.modal {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65);
+  display: grid; place-items: center; padding: 20px; z-index: 50;
+  overflow-y: auto;
+}
+.modal-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 24px; max-width: 620px; width: 100%;
+  box-shadow: var(--shadow); max-height: 90vh; overflow-y: auto;
+}
+.modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.modal-head h2 { margin: 0; font-size: 19px; }
+.close { background: none; border: none; color: var(--muted); font-size: 18px; padding: 4px 8px; }
+.debrief-result { font-size: 26px; font-weight: 680; font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+.verdict {
+  background: var(--surface-2); border-radius: 8px; padding: 14px;
+  font-size: 14.5px; line-height: 1.6; margin: 0 0 16px;
+}
+.lesson {
+  border-left: 3px solid var(--accent); padding: 11px 14px;
+  background: var(--surface-2); border-radius: 0 8px 8px 0; margin-bottom: 10px;
+}
+.lesson.process { border-left-color: var(--warn); }
+.lesson.chiffre { border-left-color: var(--accent); }
+.lesson.contexte { border-left-color: var(--muted); }
+.lesson-title { font-weight: 620; font-size: 14px; margin-bottom: 4px; }
+.lesson-msg { font-size: 13.5px; color: var(--muted); line-height: 1.65; }
+
+.foot {
+  max-width: 1180px; margin: 0 auto; padding: 20px;
+  border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px;
+}
+.foot p { margin: 0; }
+
+.empty { text-align: center; padding: 40px 20px; color: var(--muted); }

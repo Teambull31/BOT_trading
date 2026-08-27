@@ -13,3 +13,6 @@ htmlcov/
 .env
 
 .env
+
+# Compte d'entrainement (donnees locales de l'utilisateur)
+data/coach/

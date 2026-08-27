@@ -306,6 +306,38 @@ telle quelle a la fenetre evaluee, qui n'a servi a aucun choix de parametre.
 indicateurs (recalcul sur prefixe), execution a l'ouverture de la seance
 suivante, frais et slippage sur chaque ordre.
 
+## Application d'entrainement "zero to hero" (`scripts/coach.py`)
+
+```bash
+python scripts/coach.py            # http://127.0.0.1:8000
+```
+
+Interface web locale pour s'entrainer sur des cours REELS avec de l'argent
+FICTIF. Aucun ordre reel, aucun courtier connecte, un fichier JSON sur disque.
+Le serveur n'a pas d'authentification : il ecoute sur 127.0.0.1 et ne doit pas
+etre expose sur un reseau.
+
+- **Capital saisi manuellement.** Chaque apport est un evenement date et
+  conserve : voir "j'ai remis 500 EUR apres m'etre fait sortir" est la lecon la
+  plus utile qu'un compte d'entrainement puisse donner.
+- **Cours en temps reel** via l'API de quotation Nasdaq, avec le statut de
+  marche affiche — hors seance, l'interface previent que les prix sont
+  indicatifs plutot que de laisser croire qu'on peut trader ce prix.
+- **Conseils avant ouverture** : taille, distance au stop, rapport gain/perte,
+  concentration, ecart achat/vente. Deux verifications sont BLOQUANTES : un
+  risque au stop superieur a 4 % du capital, et une position depassant 60 % du
+  compte — parce que le risque "au stop" suppose que le stop tienne, ce qu'un
+  trou de cotation dement.
+- **Debrief automatique a chaque cloture** : ce qui etait sous controle, puis
+  ce qu'une autre decision aurait donne, chiffres a l'appui. Les habitudes
+  repetees (stop recule, position surdimensionnee, sorties le jour meme) sont
+  detectees sur les vingt derniers trades.
+- **Parcours en sept paliers.** Aucun ne recompense le fait de GAGNER : sur dix
+  trades le resultat est surtout du hasard, et progresser au resultat
+  apprendrait a confondre chance et competence. Ce qui est evalue est le
+  process — stop defini avant l'entree, dimensionnement, discipline, patience,
+  asymetrie, resilience, regularite sur trente trades.
+
 ### Probabilite de reussite et effet de levier (`signal_probability.py`)
 
 ```bash

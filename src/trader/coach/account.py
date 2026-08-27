@@ -1,0 +1,394 @@
+"""Compte d'entrainement en argent fictif, persisté sur disque.
+
+Le capital est saisi MANUELLEMENT par l'utilisateur : chaque dépôt est un
+événement date et conservé. C'est volontaire — voir en clair "j'ai remis 500 EUR
+après m'etre fait sortir" est la lecon la plus utile que puisse donner un compte
+d'entrainement, et un solde qui se recharge en silence l'effacerait.
+
+Toutes les positions sont longues et sans levier. Les mesures du dépôt montrent
+que le levier au-delà de 2x détruit le capital ; l'imposer a un débutant serait
+lui apprendre a se ruiner vite.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+from trader.logging_setup import get_logger
+
+log = get_logger(__name__)
+
+DEFAULT_STORE = Path("data/coach/account.json")
+COMMISSION_PCT: float = 0.10
+SLIPPAGE_PCT: float = 0.05
+MIN_COMMISSION: float = 1.0
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+@dataclass(slots=True)
+class Deposit:
+    """Apport de capital saisi par l'utilisateur."""
+
+    amount: float
+    at: str = field(default_factory=_now)
+    note: str = ""
+
+
+@dataclass(slots=True)
+class Position:
+    """Position ouverte."""
+
+    id: str
+    symbol: str
+    shares: float
+    entry_price: float
+    stop: float
+    opened_at: str
+    entry_costs: float
+    target: float | None = None
+    rationale: str = ""
+    highest_price: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.highest_price <= 0:
+            self.highest_price = self.entry_price
+
+    @property
+    def cost_basis(self) -> float:
+        """Montant engagé a l'ouverture."""
+        return self.shares * self.entry_price
+
+    def risk_at_stop(self) -> float:
+        """Perte si le stop est touché, frais d'entrée inclus."""
+        return (self.entry_price - self.stop) * self.shares + self.entry_costs
+
+    def value(self, price: float) -> float:
+        """Valeur courante."""
+        return self.shares * price
+
+    def unrealised(self, price: float) -> float:
+        """Plus ou moins-value latente."""
+        return (price - self.entry_price) * self.shares - self.entry_costs
+
+    def unrealised_pct(self, price: float) -> float:
+        """Plus ou moins-value latente en % du montant engagé."""
+        return self.unrealised(price) / self.cost_basis * 100.0 if self.cost_basis else 0.0
+
+    def distance_to_stop_pct(self, price: float) -> float:
+        """Marge restante avant le stop, en % du cours actuel."""
+        return (price - self.stop) / price * 100.0 if price > 0 else 0.0
+
+
+@dataclass(slots=True)
+class ClosedTrade:
+    """Trade terminé, conservé pour le debrief et la progression."""
+
+    id: str
+    symbol: str
+    shares: float
+    entry_price: float
+    exit_price: float
+    stop: float
+    opened_at: str
+    closed_at: str
+    pnl: float
+    costs: float
+    exit_reason: str
+    target: float | None = None
+    rationale: str = ""
+    highest_price: float = 0.0
+    stop_moved_against: bool = False
+    """Le stop a-t-il été élargi pendant la vie du trade ?
+
+    C'est l'erreur la plus coûteuse du débutant : reculer son stop pour ne pas
+    matérialiser une perte. On la trace explicitement pour pouvoir la montrer.
+    """
+
+    @property
+    def return_pct(self) -> float:
+        """Rendement en % du montant engagé."""
+        notional = self.shares * self.entry_price
+        return self.pnl / notional * 100.0 if notional else 0.0
+
+    @property
+    def is_win(self) -> bool:
+        return self.pnl > 0
+
+    @property
+    def holding_days(self) -> int:
+        opened = datetime.fromisoformat(self.opened_at)
+        closed = datetime.fromisoformat(self.closed_at)
+        return max(0, (closed - opened).days)
+
+    @property
+    def planned_risk(self) -> float:
+        """Perte qui était prévue si le stop était touche."""
+        return (self.entry_price - self.stop) * self.shares
+
+    @property
+    def respected_stop(self) -> bool:
+        """La perte est-elle restee dans l'enveloppe prévue ?
+
+        Tolerance de 15 % : un gap d'ouverture peut faire sortir sous le stop
+        sans que ce soit une faute de discipline.
+        """
+        if self.pnl >= 0:
+            return True
+        return abs(self.pnl) <= self.planned_risk * 1.15 + self.costs
+
+
+@dataclass(slots=True)
+class AccountState:
+    """État complet du compte d'entrainement."""
+
+    cash: float = 0.0
+    deposits: list[Deposit] = field(default_factory=list)
+    positions: list[Position] = field(default_factory=list)
+    history: list[ClosedTrade] = field(default_factory=list)
+    created_at: str = field(default_factory=_now)
+
+    @property
+    def total_deposited(self) -> float:
+        """Argent fictif injecte au total — le vrai denominateur du résultat."""
+        return sum(deposit.amount for deposit in self.deposits)
+
+
+class InsufficientFunds(ValueError):
+    """Liquidités insuffisantes."""
+
+
+class PaperAccount:
+    """Compte fictif : depots manuels, achats, ventes, historique."""
+
+    def __init__(self, store: Path | str = DEFAULT_STORE) -> None:
+        self.store = Path(store)
+        self.state = self._load()
+
+    # ------------------------------------------------------------ persistance
+
+    def _load(self) -> AccountState:
+        if not self.store.exists():
+            return AccountState()
+        try:
+            raw = json.loads(self.store.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as error:
+            log.warning("account_load_failed", error=str(error))
+            return AccountState()
+        return AccountState(
+            cash=float(raw.get("cash", 0.0)),
+            deposits=[Deposit(**item) for item in raw.get("deposits", [])],
+            positions=[Position(**item) for item in raw.get("positions", [])],
+            history=[ClosedTrade(**item) for item in raw.get("history", [])],
+            created_at=raw.get("created_at", _now()),
+        )
+
+    def save(self) -> None:
+        """Ecrit l'etat sur disque, de facon atomique."""
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "cash": round(self.state.cash, 2),
+            "deposits": [asdict(item) for item in self.state.deposits],
+            "positions": [asdict(item) for item in self.state.positions],
+            "history": [asdict(item) for item in self.state.history],
+            "created_at": self.state.created_at,
+        }
+        temporary = self.store.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(self.store)
+
+    # ------------------------------------------------------------ operations
+
+    def deposit(self, amount: float, note: str = "") -> Deposit:
+        """Ajoute du capital fictif. C'est la saisie manuelle demandee."""
+        if amount <= 0:
+            raise ValueError("le montant doit être positif")
+        entry = Deposit(amount=float(amount), note=note)
+        self.state.deposits.append(entry)
+        self.state.cash += float(amount)
+        self.save()
+        log.info("deposit", amount=amount, cash=self.state.cash)
+        return entry
+
+    @staticmethod
+    def costs_for(notional: float) -> float:
+        """Frais d'un ordre : commission plancher plus slippage."""
+        return max(MIN_COMMISSION, notional * COMMISSION_PCT / 100.0)
+
+    def open_position(
+        self,
+        symbol: str,
+        shares: float,
+        price: float,
+        stop: float,
+        *,
+        target: float | None = None,
+        rationale: str = "",
+    ) -> Position:
+        """Ouvre une position longue.
+
+        Le stop est OBLIGATOIRE et doit être sous le prix d'entrée : une
+        position sans niveau de sortie défini à l'avance n'est pas un trade,
+        c'est un pari dont on déciderà la fin sous le coup de l'émotion.
+        """
+        symbol = symbol.upper().strip()
+        if shares <= 0:
+            raise ValueError("quantite invalide")
+        if price <= 0:
+            raise ValueError("prix invalide")
+        if stop <= 0 or stop >= price:
+            raise ValueError("le stop doit être strictement sous le prix d'entrée")
+        if any(position.symbol == symbol for position in self.state.positions):
+            raise ValueError(f"une position est déjà ouverte sur {symbol}")
+
+        fill = price * (1.0 + SLIPPAGE_PCT / 100.0)
+        notional = shares * fill
+        costs = self.costs_for(notional)
+        if notional + costs > self.state.cash + 1e-9:
+            raise InsufficientFunds(
+                f"il faut {notional + costs:,.2f} EUR, le compte en a {self.state.cash:,.2f}"
+            )
+
+        position = Position(
+            id=_new_id(),
+            symbol=symbol,
+            shares=float(shares),
+            entry_price=fill,
+            stop=float(stop),
+            opened_at=_now(),
+            entry_costs=costs,
+            target=float(target) if target else None,
+            rationale=rationale,
+            highest_price=fill,
+        )
+        self.state.cash -= notional + costs
+        self.state.positions.append(position)
+        self.save()
+        log.info("position_opened", symbol=symbol, shares=shares, price=fill, stop=stop)
+        return position
+
+    def update_stop(self, position_id: str, stop: float) -> Position:
+        """Deplace un stop, en tracant tout élargissement.
+
+        Reculer un stop est autorise — l'interdire empecherait d'apprendre par
+        l'erreur — mais c'est enregistre et le debrief le rappellera.
+        """
+        position = self.find_position(position_id)
+        if stop <= 0:
+            raise ValueError("stop invalide")
+        if stop < position.stop:
+            log.warning("stop_widened", symbol=position.symbol, old=position.stop, new=stop)
+            position.rationale = (position.rationale + " [stop élargi]").strip()
+        position.stop = float(stop)
+        self.save()
+        return position
+
+    def mark(self, prices: dict[str, float]) -> None:
+        """Met à jour le plus haut atteint par chaque position.
+
+        Sert au debrief : sans lui, impossible de dire a l'utilisateur qu'il
+        avait +18 % latents avant de sortir a +3 %.
+        """
+        for position in self.state.positions:
+            price = prices.get(position.symbol)
+            if price and price > position.highest_price:
+                position.highest_price = float(price)
+        self.save()
+
+    def close_position(self, position_id: str, price: float, reason: str = "manuel") -> ClosedTrade:
+        """Ferme une position et l'archive."""
+        position = self.find_position(position_id)
+        if price <= 0:
+            raise ValueError("prix invalide")
+
+        fill = price * (1.0 - SLIPPAGE_PCT / 100.0)
+        proceeds = position.shares * fill
+        costs = self.costs_for(proceeds)
+        pnl = proceeds - costs - position.cost_basis - position.entry_costs
+
+        trade = ClosedTrade(
+            id=position.id,
+            symbol=position.symbol,
+            shares=position.shares,
+            entry_price=position.entry_price,
+            exit_price=fill,
+            stop=position.stop,
+            opened_at=position.opened_at,
+            closed_at=_now(),
+            pnl=pnl,
+            costs=costs + position.entry_costs,
+            exit_reason=reason,
+            target=position.target,
+            rationale=position.rationale,
+            highest_price=max(position.highest_price, fill),
+            stop_moved_against="[stop élargi]" in position.rationale,
+        )
+        self.state.cash += proceeds - costs
+        self.state.positions = [p for p in self.state.positions if p.id != position_id]
+        self.state.history.append(trade)
+        self.save()
+        log.info("position_closed", symbol=trade.symbol, pnl=round(pnl, 2), reason=reason)
+        return trade
+
+    # --------------------------------------------------------------- lectures
+
+    def find_position(self, position_id: str) -> Position:
+        for position in self.state.positions:
+            if position.id == position_id:
+                return position
+        raise KeyError(f"position introuvable : {position_id}")
+
+    def equity(self, prices: dict[str, float]) -> float:
+        """Valeur totale du compte : liquidites plus positions valorisees."""
+        held = sum(
+            position.value(prices.get(position.symbol, position.entry_price))
+            for position in self.state.positions
+        )
+        return self.state.cash + held
+
+    def exposure_pct(self, prices: dict[str, float]) -> float:
+        """Part du compte engagee en positions."""
+        total = self.equity(prices)
+        if total <= 0:
+            return 0.0
+        held = total - self.state.cash
+        return held / total * 100.0
+
+    def performance(self, prices: dict[str, float]) -> dict[str, float]:
+        """Indicateurs de suivi, rapportes au capital REELLEMENT injecte."""
+        deposited = self.state.total_deposited
+        equity = self.equity(prices)
+        wins = [trade for trade in self.state.history if trade.is_win]
+        losses = [trade for trade in self.state.history if not trade.is_win]
+        gross_win = sum(trade.pnl for trade in wins)
+        gross_loss = abs(sum(trade.pnl for trade in losses))
+        return {
+            "equity": equity,
+            "deposited": deposited,
+            "pnl": equity - deposited,
+            "pnl_pct": (equity / deposited - 1.0) * 100.0 if deposited > 0 else 0.0,
+            "cash": self.state.cash,
+            "exposure_pct": self.exposure_pct(prices),
+            "closed_trades": len(self.state.history),
+            "open_positions": len(self.state.positions),
+            "hit_rate": len(wins) / len(self.state.history) if self.state.history else 0.0,
+            "avg_win": gross_win / len(wins) if wins else 0.0,
+            "avg_loss": gross_loss / len(losses) if losses else 0.0,
+            "profit_factor": gross_win / gross_loss if gross_loss > 0 else 0.0,
+            "total_costs": sum(trade.costs for trade in self.state.history),
+        }
+
+    def reset(self) -> None:
+        """Repart de zero — l'entrainement doit pouvoir être recommence."""
+        self.state = AccountState()
+        self.save()

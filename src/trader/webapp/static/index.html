@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coach Trading — zéro to héro</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234d9fff'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='white'%3E%E2%96%B2%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▲</span>
+    <div>
+      <h1>Coach Trading</h1>
+      <p class="sub">Argent fictif · cours réels · mode zéro to héro</p>
+    </div>
+  </div>
+  <div class="rank-badge" id="rank-badge">
+    <span class="rank-name" id="rank-name">—</span>
+    <span class="rank-progress" id="rank-progress"></span>
+  </div>
+</header>
+
+<!-- Premier écran : saisie manuelle du capital -->
+<section id="onboarding" class="onboarding hidden">
+  <div class="card onboarding-card">
+    <h2>Combien voulez-vous vous entraîner avec&nbsp;?</h2>
+    <p class="muted">
+      Cet argent est <strong>fictif</strong>. Aucun ordre réel ne sera passé, aucun
+      courtier n'est connecté. Choisissez un montant réaliste&nbsp;: s'entraîner avec
+      un million quand on investira mille euros n'apprend pas les bons réflexes.
+    </p>
+    <div class="amount-row">
+      <button class="chip" data-amount="500">500 €</button>
+      <button class="chip" data-amount="1000">1 000 €</button>
+      <button class="chip" data-amount="5000">5 000 €</button>
+      <button class="chip" data-amount="10000">10 000 €</button>
+    </div>
+    <div class="field-row">
+      <input type="number" id="deposit-amount" placeholder="Montant libre" min="1" step="10">
+      <button class="primary" id="deposit-btn">Créditer le compte</button>
+    </div>
+    <p class="error" id="deposit-error"></p>
+  </div>
+</section>
+
+<main id="app" class="hidden">
+
+  <!-- Bandeau de performance -->
+  <section class="stats" id="stats"></section>
+
+  <!-- Objectif du moment -->
+  <section class="card mission" id="mission">
+    <div class="mission-head">
+      <span class="mission-tag">Objectif du moment</span>
+      <h2 id="mission-title">—</h2>
+    </div>
+    <p id="mission-goal" class="mission-goal"></p>
+    <div class="mission-why">
+      <strong>Pourquoi&nbsp;:</strong> <span id="mission-why"></span>
+    </div>
+    <p class="mission-detail" id="mission-detail"></p>
+  </section>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="trade">Trader</button>
+    <button class="tab" data-tab="positions">Positions <span class="count" id="count-positions"></span></button>
+    <button class="tab" data-tab="parcours">Parcours</button>
+    <button class="tab" data-tab="historique">Historique</button>
+  </nav>
+
+  <!-- Onglet : passer un trade -->
+  <section class="panel active" id="tab-trade">
+    <div class="two-col">
+      <div class="card">
+        <h3>Marché en direct</h3>
+        <p class="muted small" id="market-status">Chargement…</p>
+        <div class="watchlist" id="watchlist"></div>
+      </div>
+
+      <div class="card">
+        <h3>Préparer un trade</h3>
+        <div class="form">
+          <label>Titre
+            <input type="text" id="t-symbol" placeholder="MU" autocomplete="off">
+          </label>
+          <div class="price-hint" id="price-hint"></div>
+
+          <label>Stop — le prix où vous acceptez d'avoir tort
+            <input type="number" id="t-stop" step="0.01" placeholder="ex. 880.00">
+          </label>
+
+          <div class="sizing">
+            <span class="muted small">Quantité pour risquer</span>
+            <div class="risk-chips">
+              <button class="chip small" data-risk="0.5">0,5 %</button>
+              <button class="chip small active" data-risk="1">1 %</button>
+              <button class="chip small" data-risk="2">2 %</button>
+            </div>
+            <button class="ghost" id="calc-size">Calculer</button>
+          </div>
+
+          <label>Quantité
+            <input type="number" id="t-shares" step="0.0001" placeholder="calculée ou libre">
+          </label>
+
+          <label>Objectif <span class="muted small">(facultatif mais recommandé)</span>
+            <input type="number" id="t-target" step="0.01" placeholder="ex. 1050.00">
+          </label>
+
+          <label>Pourquoi ce trade&nbsp;?
+            <input type="text" id="t-rationale" placeholder="Votre raison, en une ligne">
+          </label>
+
+          <button class="primary wide" id="review-btn">Analyser ce trade</button>
+          <p class="error" id="trade-error"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Résultat de l'analyse -->
+    <div class="card hidden" id="review-card">
+      <h3>Analyse avant ouverture</h3>
+      <div class="review-metrics" id="review-metrics"></div>
+      <div class="advices" id="advices"></div>
+      <div class="review-actions">
+        <button class="primary" id="confirm-btn">Ouvrir la position</button>
+        <button class="ghost" id="cancel-btn">Annuler</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Onglet : positions ouvertes -->
+  <section class="panel" id="tab-positions">
+    <div id="positions-list"></div>
+  </section>
+
+  <!-- Onglet : parcours -->
+  <section class="panel" id="tab-parcours">
+    <div class="card" id="patterns-card"></div>
+    <div id="levels"></div>
+  </section>
+
+  <!-- Onglet : historique -->
+  <section class="panel" id="tab-historique">
+    <div class="card"><div id="history-list"></div></div>
+  </section>
+
+</main>
+
+<!-- Débrief après clôture -->
+<div class="modal hidden" id="debrief-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="debrief-title">Débrief</h2>
+      <button class="close" id="debrief-close">✕</button>
+    </div>
+    <div class="debrief-result" id="debrief-result"></div>
+    <p class="verdict" id="debrief-verdict"></p>
+    <div id="debrief-lessons"></div>
+    <button class="primary wide" id="debrief-ok">J'ai compris</button>
+  </div>
+</div>
+
+<footer class="foot">
+  <p>
+    Argent fictif uniquement · aucun ordre réel · aucun courtier connecté.
+    Les conseils portent sur la <strong>gestion du risque</strong>, jamais sur une
+    prévision de cours&nbsp;: les mesures de ce dépôt montrent qu'aucun signal testé
+    n'a de pouvoir prédictif significatif.
+  </p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

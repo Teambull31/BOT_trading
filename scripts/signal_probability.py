@@ -154,10 +154,7 @@ def main() -> int:
                 continue
             mean_probability = float(group["probabilite"].mean())
             gap = (mean_probability - base_rate) * 100.0
-            print(
-                f"{int(score):>+6} | {len(group):>6} | {mean_probability:>13.1%} |"
-                f" {gap:>+8.1f}"
-            )
+            print(f"{int(score):>+6} | {len(group):>6} | {mean_probability:>13.1%} | {gap:>+8.1f}")
         print(
             "\nCes estimations sont plus plates que la table descriptive : c'est normal"
             "\net c'est le signe que le decalage causal fonctionne. La table descriptive"
