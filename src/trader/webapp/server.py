@@ -75,9 +75,17 @@ def create_app(store: Path | str | None = None) -> FastAPI:
 
     @app.get("/api/state")
     def get_state() -> dict:
-        """Etat complet : compte, positions valorisees, progression."""
+        """Etat complet : compte, positions valorisees, progression.
+
+        Les stops sont evalues ICI, a chaque rafraichissement : un stop qui ne
+        s'executerait pas laisserait l'utilisateur regarder son niveau etre
+        franchi en esperant que ca remonte, soit exactement le reflexe que le
+        parcours cherche a desapprendre.
+        """
         prices = current_prices()
         account.mark(prices)
+        stopped = account.check_stops(prices)
+        targets = account.targets_reached(prices)
         progress = evaluate_progress(account.state)
         positions = []
         for position in account.state.positions:
@@ -109,6 +117,22 @@ def create_app(store: Path | str | None = None) -> FastAPI:
             "progress": progress.to_dict(),
             "patterns": [lesson.to_dict() for lesson in recurring_patterns(account.state)],
             "has_capital": account.state.total_deposited > 0,
+            # Stops declenches pendant ce rafraichissement : l'interface doit les
+            # montrer immediatement, avec leur debrief. Une sortie subie sans
+            # explication est une occasion d'apprendre perdue.
+            "stopped": [debrief_trade(trade, account.state).to_dict() for trade in stopped],
+            "targets_reached": [
+                {
+                    "id": position.id,
+                    "symbol": position.symbol,
+                    "target": round(position.target, 4) if position.target else None,
+                    "price": round(prices.get(position.symbol, 0.0), 4),
+                    "unrealised": round(
+                        position.unrealised(prices.get(position.symbol, position.entry_price)), 2
+                    ),
+                }
+                for position in targets
+            ],
         }
 
     @app.get("/api/history")

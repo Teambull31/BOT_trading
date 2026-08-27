@@ -134,7 +134,7 @@ def fetch_quote(symbol: str, *, use_cache: bool = True, timeout: float = 12.0) -
     data = payload.get("data") or {}
     primary = data.get("primaryData") or {}
     if not primary:
-        raise QuoteError(f"aucune donnee de cotation pour {symbol}")
+        raise QuoteError(f"aucune donnée de cotation pour {symbol}")
     secondary = data.get("secondaryData") or {}
     price = _parse_price(primary.get("lastSalePrice"))
     if price != price:  # NaN

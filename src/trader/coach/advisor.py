@@ -214,9 +214,9 @@ def review_plan(
             Advice(
                 Severity.BLOCKER,
                 f"Concentration excessive : {position_pct:.0f} % du compte",
-                f"Le risque affiche ({risk_pct:.2f} %) suppose que le stop tienne. Il ne "
-                f"tient pas sur un trou de cotation : a l'ouverture, le cours peut sauter "
-                f"par-dessus. Une séance a -{GAP_SHOCK_PCT:.0f} % — il y en a eu plusieurs "
+                f"Le risque affiché ({risk_pct:.2f} %) suppose que le stop tienne. Il ne "
+                f"tient pas sur un trou de cotation : à l'ouverture, le cours peut sauter "
+                f"par-dessus. Une séance à -{GAP_SHOCK_PCT:.0f} % — il y en a eu plusieurs "
                 f"sur cet univers en 2026 — coûterait alors {gap_loss_pct:.1f} % du compte. "
                 f"Restez sous {MAX_CONCENTRATION_PCT:.0f} % par position.",
             )
@@ -226,10 +226,10 @@ def review_plan(
             Advice(
                 Severity.WARNING,
                 f"Concentration : {position_pct:.0f} % du compte",
-                f"Une position qui pese plus de 40 % du compte fait dépendre le résultat "
-                f"d'un seul titre. Sur un trou de cotation a -{GAP_SHOCK_PCT:.0f} %, le "
-                f"stop est saute et la perte atteint {gap_loss_pct:.1f} % du compte, "
-                f"quel que soit le risque affiche.",
+                f"Une position qui pèse plus de 40 % du compte fait dépendre le résultat "
+                f"d'un seul titre. Sur un trou de cotation à -{GAP_SHOCK_PCT:.0f} %, le "
+                f"stop est sauté et la perte atteint {gap_loss_pct:.1f} % du compte, "
+                f"quel que soit le risque affiché.",
             )
         )
 
@@ -241,7 +241,7 @@ def review_plan(
                 f"Stop très serré ({plan.stop_distance_pct:.1f} %)",
                 "Une action bouge couramment de 2 à 3 % dans une séance ordinaire. "
                 "Un stop aussi proche sera déclenché par le bruit, pas par un vrai "
-                "retournement, et vous paierez les frais a chaque fois.",
+                "retournement, et vous paierez les frais à chaque fois.",
             )
         )
     elif plan.stop_distance_pct > 25.0:
@@ -269,9 +269,9 @@ def review_plan(
         advices.append(
             Advice(
                 Severity.WARNING,
-                f"Gain vise plus petit que la perte acceptee ({ratio:.2f})",
+                f"Gain visé plus petit que la perte acceptée ({ratio:.2f})",
                 "Vous risquez plus que ce que vous espérez. Comme aucun signal ne rend "
-                "la hausse plus probable qu'un tirage a pile ou face, ce rapport rend "
+                "la hausse plus probable qu'un tirage à pile ou face, ce rapport rend "
                 "l'opération perdante en moyenne.",
             )
         )
@@ -291,10 +291,10 @@ def review_plan(
             advices.append(
                 Advice(
                     Severity.WARNING,
-                    f"Marche : {quote.market_status}",
+                    f"Marché : {quote.market_status}",
                     "Hors séance principale, les volumes sont faibles et les écarts "
-                    "larges. Le prix affiche n'est pas celui auquel vous seriez servi "
-                    "a l'ouverture.",
+                    "larges. Le prix affiché n'est pas celui auquel vous seriez servi "
+                    "à l'ouverture.",
                 )
             )
         spread = quote.spread_pct
@@ -303,8 +303,8 @@ def review_plan(
                 Advice(
                     Severity.WARNING,
                     f"Écart achat/vente de {spread:.2f} %",
-                    "Cet écart est paye deux fois, à l'entrée et a la sortie. Il ampute "
-                    "le gain avant même que le cours ait bouge.",
+                    "Cet écart est payé deux fois, à l'entrée et à la sortie. Il ampute "
+                    "le gain avant même que le cours ait bougé.",
                 )
             )
         if abs(quote.change_pct) > 5.0:
@@ -313,8 +313,8 @@ def review_plan(
                 Advice(
                     Severity.INFO,
                     f"Le titre a {direction} de {abs(quote.change_pct):.1f} % aujourd'hui",
-                    "Entrer après un mouvement violent expose a la réaction inverse. "
-                    "Si vous entrez quand même, élargissez le stop et reduisez la taille "
+                    "Entrer après un mouvement violent expose à la réaction inverse. "
+                    "Si vous entrez quand même, élargissez le stop et réduisez la taille "
                     "en conséquence.",
                 )
             )
@@ -326,7 +326,7 @@ def review_plan(
             "Ce que ce conseil ne dit pas",
             "Rien ici ne prévoit la direction du cours. Les mesures de ce dépôt montrent "
             "qu'un faisceau de sept signaux concordants n'apporte qu'un point de "
-            "probabilité sur le taux de base. Ce qui est vérifie ci-dessus, c'est ce que "
+            "probabilité sur le taux de base. Ce qui est vérifié ci-dessus, c'est ce que "
             "vous contrôlez : la taille, le stop et le rapport gain/perte.",
         )
     )

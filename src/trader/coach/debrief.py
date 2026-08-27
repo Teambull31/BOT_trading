@@ -95,11 +95,45 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
                 f"Au-delà de {MAX_RISK_PCT:.0f} %, cinq pertes consécutives — une série "
                 f"parfaitement ordinaire — coûtent {risk_pct * 5:.0f} % du compte. "
                 "Diviser la taille par deux ne divise pas les gains par deux sur la "
-                "duree : cela évite surtout la perte qui met hors jeu.",
+                "durée : cela évite surtout la perte qui met hors jeu.",
             )
         )
 
-    if not trade.respected_stop and not trade.stop_moved_against:
+    # ------------------------------------------ qualité de la sortie : UNE leçon
+    # Un seul enseignement ici. Afficher « sortie au-delà du stop prévu » ET
+    # « stop exécuté comme prévu » dans le même debrief ne laisse rien
+    # apprendre : les deux se contredisent, donc aucun des deux ne porte.
+    gap_pct = (trade.stop - trade.exit_price) / trade.stop * 100.0 if trade.stop > 0 else 0.0
+    slippage = (trade.stop - trade.exit_price) * trade.shares
+    overshoot = not trade.respected_stop and not trade.stop_moved_against
+
+    if overshoot and trade.stop_locks_gain:
+        lessons.append(
+            Lesson(
+                "contexte",
+                "Le stop protégeait un gain, la sortie est une perte",
+                f"Le stop ({trade.stop:,.2f}) était au-dessus du prix d'entrée "
+                f"({trade.entry_price:,.2f}) : touché à son niveau, il verrouillait un "
+                f"gain. La sortie s'est faite à {trade.exit_price:,.2f}, soit "
+                f"{abs(trade.pnl):,.2f} EUR de perte. Le cours est passé par-dessus le "
+                "niveau sans s'y arrêter. Un stop borne une perte, il ne la garantit "
+                "pas — seule la taille de la position est vraiment sous contrôle.",
+            )
+        )
+    elif trade.exit_reason == "stop_touche" and gap_pct > 1.0:
+        lessons.append(
+            Lesson(
+                "chiffre",
+                f"Sortie {gap_pct:.1f} % sous le niveau du stop",
+                f"Le stop était à {trade.stop:,.2f}, la sortie s'est faite à "
+                f"{trade.exit_price:,.2f} : {slippage:,.2f} EUR de plus que prévu. "
+                "Un stop n'est pas un prix garanti, c'est un ordre déclenché — entre "
+                "le franchissement et l'exécution, le cours continue de bouger. "
+                "C'est pour cela que la TAILLE de la position protège mieux qu'un "
+                "stop rapproché : elle, on la choisit vraiment.",
+            )
+        )
+    elif overshoot:
         lessons.append(
             Lesson(
                 "contexte",
@@ -109,6 +143,17 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
                 "trou de cotation : le cours a sauté par-dessus le niveau sans y passer. "
                 "C'est le risque résiduel qu'aucun stop n'élimine, et la raison pour "
                 "laquelle la taille compte plus que le stop.",
+            )
+        )
+    elif trade.exit_reason == "stop_touche":
+        lessons.append(
+            Lesson(
+                "process",
+                "Stop exécuté comme prévu",
+                f"Sortie à {trade.exit_price:,.2f} pour un stop à {trade.stop:,.2f}. "
+                "La perte est restée dans l'enveloppe décidée avant d'entrer : "
+                "c'est exactement ce à quoi sert un stop, et c'est ce qui permet "
+                "de se tromper souvent sans jamais être mis hors jeu.",
             )
         )
 
@@ -130,10 +175,12 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
                 )
             )
 
-    if trade.pnl < 0 and trade.target:
+    # Un risque planifie nul (stop au-dessus de l'entree) ne se juge pas au
+    # rapport gain/perte : ce rapport serait infiniment favorable, pas nul.
+    if trade.pnl < 0 and trade.target and trade.planned_risk > 0:
         planned_gain = (trade.target - trade.entry_price) * trade.shares
         if planned_gain > 0:
-            ratio = planned_gain / trade.planned_risk if trade.planned_risk > 0 else 0.0
+            ratio = planned_gain / trade.planned_risk
             if ratio < 1.5:
                 lessons.append(
                     Lesson(
@@ -151,7 +198,7 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
         lessons.append(
             Lesson(
                 "process",
-                "Trade ouvert et ferme le même jour",
+                "Trade ouvert et fermé le même jour",
                 "Une sortie le jour même signifie souvent un stop placé dans le bruit de "
                 "la séance. Une action bouge couramment de 2 à 3 % sans que rien ne se "
                 "passe : sous cette distance, c'est le hasard qui déclenche la sortie, "
@@ -177,12 +224,12 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
     if well_played and trade.is_win:
         verdict = (
             "Trade bien mené et gagnant. Attention toutefois : un gain isolé ne prouve "
-            "rien sur la methode, seule la répétition le fera."
+            "rien sur la méthode, seule la répétition le fera."
         )
     elif well_played:
         verdict = (
             "Trade PERDANT mais bien mené. C'est le cas le plus important à comprendre : "
-            "la perte était prévue, dimensionnée et tenue. Rien à corriger — repeter ce "
+            "la perte était prévue, dimensionnée et tenue. Rien à corriger — répéter ce "
             "process est exactement ce qu'il faut faire."
         )
     elif trade.is_win:
@@ -220,7 +267,7 @@ def recurring_patterns(state: AccountState, minimum: int = 5) -> list[Lesson]:
                 "process",
                 f"Stop reculé sur {widened} des {len(recent)} derniers trades",
                 "Ce n'est plus un accident, c'est une habitude. Elle vient presque "
-                "toujours d'un stop place trop pres au depart. Placez-le a une distance "
+                "toujours d'un stop placé trop près au départ. Placez-le à une distance "
                 "que le titre parcourt normalement en une séance, et ajustez la TAILLE "
                 "pour que la perte reste supportable.",
             )
@@ -231,10 +278,10 @@ def recurring_patterns(state: AccountState, minimum: int = 5) -> list[Lesson]:
         lessons.append(
             Lesson(
                 "process",
-                f"{oversized} des {len(recent)} derniers trades étaient surdimensionnes",
-                "Le dimensionnement est le seul reglage dont l'effet est certain. "
-                "Fixez la perte au stop a 1 % du capital et deduisez-en la quantite, "
-                "au lieu de choisir un montant a investir puis d'y coller un stop.",
+                f"{oversized} des {len(recent)} derniers trades étaient surdimensionnés",
+                "Le dimensionnement est le seul réglage dont l'effet est certain. "
+                "Fixez la perte au stop à 1 % du capital et déduisez-en la quantité, "
+                "au lieu de choisir un montant à investir puis d'y coller un stop.",
             )
         )
 
@@ -243,7 +290,7 @@ def recurring_patterns(state: AccountState, minimum: int = 5) -> list[Lesson]:
         lessons.append(
             Lesson(
                 "process",
-                f"{same_day} des {len(recent)} derniers trades ont dure moins d'un jour",
+                f"{same_day} des {len(recent)} derniers trades ont duré moins d'un jour",
                 "Vos stops sont dans le bruit de la séance. Chaque aller-retour paie des "
                 "frais avec certitude et n'attrape une tendance qu'avec espoir. Élargir "
                 "le stop et réduire la taille change ce rapport.",
@@ -260,9 +307,9 @@ def recurring_patterns(state: AccountState, minimum: int = 5) -> list[Lesson]:
                     "chiffre",
                     f"Perte moyenne {avg_loss:,.2f} EUR contre gain moyen {avg_win:,.2f} EUR",
                     "Vos pertes sont plus grosses que vos gains : vous laissez courir les "
-                    "mauvaises positions et coupez les bonnes. C'est le reflexe naturel, "
+                    "mauvaises positions et coupez les bonnes. C'est le réflexe naturel, "
                     "et c'est exactement l'inverse de ce qu'il faut faire. Un stop suiveur "
-                    "impose mecaniquement la bonne asymetrie.",
+                    "impose mécaniquement la bonne asymétrie.",
                 )
             )
 

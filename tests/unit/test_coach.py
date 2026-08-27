@@ -396,3 +396,146 @@ def test_quote_survives_null_fields_from_the_api(monkeypatch):
     assert quote.week52_range == ""
     assert quote.market_status == "inconnu"
     assert quote.bid is None
+
+
+# ------------------------------------------------------- declenchement du stop
+
+
+def test_stop_triggers_when_price_falls_below(account):
+    """Sans exécution automatique, le stop ne serait qu'une intention."""
+    position = account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    assert account.check_stops({"AAA": 96.0}) == []
+    triggered = account.check_stops({"AAA": 94.0})
+    assert len(triggered) == 1
+    assert triggered[0].exit_reason == "stop_touche"
+    assert not account.state.positions
+    with pytest.raises(KeyError):
+        account.find_position(position.id)
+
+
+def test_stop_does_not_trigger_without_a_price(account):
+    """Un cours indisponible ne doit jamais provoquer de sortie fantome."""
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    assert account.check_stops({}) == []
+    assert account.check_stops({"BBB": 1.0}) == []
+    assert len(account.state.positions) == 1
+
+
+def test_stop_fills_at_the_observed_price_not_the_stop_level(account):
+    """Sur un écart brutal, la sortie se fait bien plus bas que le stop.
+
+    Remplir au niveau théorique du stop rendrait la simulation flatteuse et
+    masquerait le risque que justement aucun stop n'élimine.
+    """
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    trade = account.check_stops({"AAA": 80.0})[0]
+    assert trade.exit_price < 81.0, "la sortie doit refléter le cours réel"
+    assert trade.pnl < -(100.0 - 95.0), "la perte dépasse l'enveloppe prévue"
+    assert not trade.respected_stop
+
+
+def test_several_stops_can_trigger_at_once(account):
+    account.deposit(2000.0)
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    account.open_position("BBB", 1.0, 200.0, stop=190.0)
+    triggered = account.check_stops({"AAA": 90.0, "BBB": 185.0})
+    assert {t.symbol for t in triggered} == {"AAA", "BBB"}
+    assert not account.state.positions
+
+
+def test_debrief_explains_a_clean_stop(account):
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    trade = account.check_stops({"AAA": 94.9})[0]
+    lessons = debrief_trade(trade, account.state).lessons
+    assert any("exécuté comme prévu" in lesson.title for lesson in lessons)
+
+
+def test_debrief_quantifies_a_gap_below_the_stop(account):
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    trade = account.check_stops({"AAA": 80.0})[0]
+    lessons = debrief_trade(trade, account.state).lessons
+    assert any("sous le niveau du stop" in lesson.title for lesson in lessons)
+
+
+def test_targets_are_signalled_but_never_closed(account):
+    """L'objectif atteint est la décision à travailler : l'app ne tranche pas."""
+    account.open_position("AAA", 1.0, 100.0, stop=95.0, target=120.0)
+    assert account.targets_reached({"AAA": 119.0}) == []
+    reached = account.targets_reached({"AAA": 121.0})
+    assert len(reached) == 1
+    assert len(account.state.positions) == 1, "la position doit rester ouverte"
+
+
+def test_position_without_target_is_never_signalled(account):
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    assert account.targets_reached({"AAA": 999.0}) == []
+
+
+# ------------------------------------------- coherence du debrief sur la sortie
+
+
+def test_planned_risk_is_never_negative(account):
+    """Un stop remonté au-dessus de l'entrée ne planifie plus une perte.
+
+    Sans ce garde-fou, l'« enveloppe de perte » devenait négative et le debrief
+    annonçait qu'une perte de 2 EUR « dépassait l'enveloppe prévue de -0,26 EUR »,
+    une phrase qui n'enseigne rien.
+    """
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    position = account.state.positions[0]
+    account.update_stop(position.id, 110.0)
+    trade = account.check_stops({"AAA": 90.0})[0]
+    assert trade.stop_locks_gain
+    assert trade.planned_risk == 0.0
+
+
+def test_debrief_never_contradicts_itself_about_the_stop(account):
+    """Deux leçons opposées sur la même sortie s'annulent : il n'en faut qu'une.
+
+    Le cas reproduit ici est celui observe en conditions réelles : stop resserré
+    au-dessus de l'entrée, puis cours nettement plus bas au déclenchement.
+    """
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    account.update_stop(account.state.positions[0].id, 101.0)
+    trade = account.check_stops({"AAA": 97.0})[0]
+    titles = [lesson.title for lesson in debrief_trade(trade, account.state).lessons]
+    assert sum("comme prévu" in title for title in titles) + sum(
+        "au-delà du stop" in title or "protégeait un gain" in title for title in titles
+    ) == 1, titles
+
+
+def test_debrief_names_a_stop_that_was_protecting_a_gain(account):
+    account.open_position("AAA", 1.0, 100.0, stop=95.0)
+    account.update_stop(account.state.positions[0].id, 101.0)
+    trade = account.check_stops({"AAA": 97.0})[0]
+    lessons = debrief_trade(trade, account.state).lessons
+    assert any("protégeait un gain" in lesson.title for lesson in lessons)
+
+
+def test_every_displayed_lesson_is_written_in_correct_french(account):
+    """Garde-fou contre les mots amputes de leur accent dans les textes affiches."""
+    account.deposit(5000.0)
+    account.open_position("AAA", 1.0, 100.0, stop=95.0, target=101.0)
+    trade = account.check_stops({"AAA": 80.0})[0]
+    debrief = debrief_trade(trade, account.state)
+    texts = [debrief.verdict] + [f"{les.title} {les.message}" for les in debrief.lessons]
+    fautes = ("repeter", "methode", "duree", "reglage", "reflexe", "asymetrie",
+              "surdimensionnes", "ferme le", "prevu", "acceptee", "affiche n")
+    for text in texts:
+        for faute in fautes:
+            assert faute not in text.lower(), f"{faute!r} sans accent dans : {text}"
+
+
+def test_no_reward_ratio_lesson_when_nothing_was_risked(account):
+    """Risquer 0 pour espérer 42 n'est pas un mauvais rapport : il n'y en a pas.
+
+    Le rapport valait alors 0.00 et le debrief reprochait à l'utilisateur un
+    trade dont le stop, une fois remonté, ne planifiait plus aucune perte.
+    """
+    account.deposit(3000.0)
+    account.open_position("AAA", 1.0, 100.0, stop=95.0, target=145.0)
+    account.update_stop(account.state.positions[0].id, 101.0)
+    trade = account.check_stops({"AAA": 99.0})[0]
+    assert trade.planned_risk == 0.0
+    lessons = debrief_trade(trade, account.state).lessons
+    assert not any("rapport gain/perte visé" in lesson.title for lesson in lessons)

@@ -133,8 +133,19 @@ class ClosedTrade:
 
     @property
     def planned_risk(self) -> float:
-        """Perte qui était prévue si le stop était touche."""
-        return (self.entry_price - self.stop) * self.shares
+        """Perte qui était prévue si le stop était touché — jamais négative.
+
+        Un stop remonté AU-DESSUS du prix d'entrée ne planifie plus une perte
+        mais un gain : le risque planifié vaut alors zéro. Sans ce garde-fou,
+        une « enveloppe de perte » négative rendrait absurdes le ratio
+        gain/risque et les messages du debrief qui en dépendent.
+        """
+        return max(0.0, (self.entry_price - self.stop) * self.shares)
+
+    @property
+    def stop_locks_gain(self) -> bool:
+        """Le stop était-il au-dessus du prix d'entrée (gain verrouillé) ?"""
+        return self.stop > self.entry_price
 
     @property
     def respected_stop(self) -> bool:
@@ -304,6 +315,49 @@ class PaperAccount:
             if price and price > position.highest_price:
                 position.highest_price = float(price)
         self.save()
+
+    def check_stops(self, prices: dict[str, float]) -> list[ClosedTrade]:
+        """Declenche les stops touches, au prix REELLEMENT observe.
+
+        Sans cette execution automatique, le stop ne serait qu'une intention :
+        l'utilisateur pourrait le regarder etre franchi et attendre que ca
+        remonte — precisement le reflexe que le parcours cherche a desapprendre.
+        Un stop qui ne s'execute pas n'enseigne rien.
+
+        Le prix de sortie retenu est celui de la cotation observee, pas le
+        niveau theorique du stop. C'est volontaire et c'est plus honnete : dans
+        la realite on ne sort pas au niveau exact, et sur un ecart brutal la
+        sortie se fait nettement plus bas. Le debrief chiffre cet ecart.
+        """
+        triggered: list[ClosedTrade] = []
+        for position in list(self.state.positions):
+            price = prices.get(position.symbol)
+            if price is None or price > position.stop:
+                continue
+            trade = self.close_position(position.id, price, reason="stop_touche")
+            triggered.append(trade)
+            log.info(
+                "stop_triggered",
+                symbol=trade.symbol,
+                stop=position.stop,
+                fill=round(trade.exit_price, 4),
+            )
+        return triggered
+
+    def targets_reached(self, prices: dict[str, float]) -> list[Position]:
+        """Positions ayant atteint leur objectif — signalees, PAS fermees.
+
+        Le stop s'execute d'office parce qu'il protege ; l'objectif, non. Le
+        moment ou une position atteint sa cible est justement la decision qui
+        merite d'etre travaillee : encaisser, ou remonter le stop et laisser
+        courir. La fermer automatiquement priverait l'utilisateur du seul
+        arbitrage qui distingue le palier 5 du parcours.
+        """
+        return [
+            position
+            for position in self.state.positions
+            if position.target and prices.get(position.symbol, 0.0) >= position.target
+        ]
 
     def close_position(self, position_id: str, price: float, reason: str = "manuel") -> ClosedTrade:
         """Ferme une position et l'archive."""

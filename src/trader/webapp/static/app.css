@@ -296,3 +296,14 @@ button:hover { filter: brightness(1.12); }
 .foot p { margin: 0; }
 
 .empty { text-align: center; padding: 40px 20px; color: var(--muted); }
+
+/* ---------------------------------------------------------- objectifs atteints */
+
+.targets {
+  background: var(--surface); border: 1px solid var(--win);
+  border-left: 3px solid var(--win); border-radius: var(--radius);
+  padding: 16px 18px; margin-bottom: 16px;
+}
+.target-row + .target-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.target-row strong { color: var(--win); }
+.target-row .muted { margin-top: 4px; line-height: 1.55; }

@@ -239,8 +239,49 @@ window.showDebrief = async (tradeId) => {
   }
 };
 
-function showDebriefData(d) {
-  $('debrief-title').textContent = `Débrief — ${d.symbol}`;
+/* File d'attente : plusieurs stops peuvent sauter au même rafraîchissement,
+   et empiler les fenêtres les rendrait illisibles. On les montre l'une après
+   l'autre — une sortie subie mérite d'être lue, pas balayée. */
+let debriefQueue = [];
+
+function queueDebriefs(list) {
+  if (!list?.length) return;
+  debriefQueue.push(...list);
+  if ($('debrief-modal').classList.contains('hidden')) showNextDebrief();
+}
+
+function showNextDebrief() {
+  const next = debriefQueue.shift();
+  if (next) showDebriefData(next, true);
+}
+
+function renderTargets(targets) {
+  const box = $('targets-banner');
+  if (!targets?.length) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = targets
+    .map(
+      (t) => `<div class="target-row">
+        <div>
+          <strong>${t.symbol} a atteint votre objectif</strong> (${euro(t.target)})
+          — actuellement ${euro(t.price)}, ${signed(t.unrealised)} €.
+        </div>
+        <div class="muted small">
+          À vous de décider : encaisser, ou remonter le stop sous le cours et laisser courir.
+          L'app ne clôture pas à votre place — c'est précisément l'arbitrage à travailler.
+        </div>
+      </div>`
+    )
+    .join('');
+}
+
+function showDebriefData(d, forced = false) {
+  $('debrief-title').textContent = forced
+    ? `Stop déclenché — ${d.symbol}`
+    : `Débrief — ${d.symbol}`;
   $('debrief-result').innerHTML = `<span class="${cls(d.pnl)}">${signed(d.pnl)} € (${d.return_pct >= 0 ? '+' : ''}${d.return_pct.toFixed(2)} %)</span>
     <span class="muted" style="font-size:14px;font-weight:400"> · ${d.holding_days} jour(s)</span>`;
   $('debrief-verdict').textContent = d.verdict;
@@ -252,6 +293,9 @@ function showDebriefData(d) {
       </div>`
     )
     .join('');
+  $('debrief-ok').textContent = debriefQueue.length
+    ? `J'ai compris (${debriefQueue.length} autre(s))`
+    : "J'ai compris";
   $('debrief-modal').classList.remove('hidden');
 }
 
@@ -347,7 +391,9 @@ async function refresh() {
   renderPositions(state.positions);
   renderLevels(state.progress);
   renderPatterns(state.patterns);
+  renderTargets(state.targets_reached);
   await renderHistory();
+  queueDebriefs(state.stopped);
 }
 
 async function deposit(amount) {
@@ -393,8 +439,12 @@ $('calc-size').addEventListener('click', calcSize);
 $('review-btn').addEventListener('click', reviewTrade);
 $('confirm-btn').addEventListener('click', confirmTrade);
 $('cancel-btn').addEventListener('click', () => $('review-card').classList.add('hidden'));
-$('debrief-close').addEventListener('click', () => $('debrief-modal').classList.add('hidden'));
-$('debrief-ok').addEventListener('click', () => $('debrief-modal').classList.add('hidden'));
+function closeDebrief() {
+  $('debrief-modal').classList.add('hidden');
+  if (debriefQueue.length) setTimeout(showNextDebrief, 250);
+}
+$('debrief-close').addEventListener('click', closeDebrief);
+$('debrief-ok').addEventListener('click', closeDebrief);
 
 refresh().then(renderWatchlist);
 setInterval(renderWatchlist, 30000);
