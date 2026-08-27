@@ -160,6 +160,13 @@ class BacktestReport:
     benchmark: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     metrics: dict[str, float] = field(default_factory=dict)
     open_positions: list[str] = field(default_factory=list)
+    open_details: list[dict] = field(default_factory=list)
+    """Positions encore ouvertes a la fin de la fenetre.
+
+    C'est l'information la plus actionnable du rapport : elle dit ou en est le
+    capital MAINTENANT et a quel niveau chaque position sortirait. Un rapport
+    qui ne montre que les trades clotures cache la moitie de l'exposition.
+    """
 
     @property
     def final_equity(self) -> float:
@@ -297,6 +304,7 @@ class EquityBacktester:
             end=end,
             benchmark=self._benchmark(frames, calendar, initial_capital),
             open_positions=sorted(positions),
+            open_details=self._open_details(positions, frames, last_day),
         )
         report.metrics = self._metrics(report, total_costs)
         return report
@@ -487,6 +495,43 @@ class EquityBacktester:
             reason=reason,
         )
         return trade, notional - commission, commission
+
+    def _open_details(
+        self,
+        positions: dict[str, OpenPosition],
+        frames: dict[str, pd.DataFrame],
+        today: datetime,
+    ) -> list[dict]:
+        """Etat detaille des positions encore ouvertes a la derniere seance."""
+        details: list[dict] = []
+        for symbol, position in sorted(positions.items()):
+            frame = frames[symbol]
+            price = (
+                float(frame.loc[today, "close"]) if today in frame.index else position.entry_price
+            )
+            notional = position.shares * price
+            unrealized = (price - position.entry_price) * position.shares - position.entry_costs
+            details.append(
+                {
+                    "symbol": symbol,
+                    "entry_date": position.entry_date.date().isoformat(),
+                    "entry_price": round(position.entry_price, 2),
+                    "cours": round(price, 2),
+                    "shares": round(position.shares, 6),
+                    "valeur": round(notional, 2),
+                    "pnl_latent": round(unrealized, 2),
+                    "pnl_latent_%": round(
+                        unrealized / (position.shares * position.entry_price) * 100.0, 2
+                    )
+                    if position.shares * position.entry_price > 0
+                    else 0.0,
+                    "stop": round(position.stop, 2),
+                    "marge_avant_stop_%": round((position.stop / price - 1.0) * 100.0, 2)
+                    if price > 0
+                    else 0.0,
+                }
+            )
+        return details
 
     @staticmethod
     def _positions_value(

@@ -202,6 +202,17 @@ def main(
             "n'ont jamais ete reunies sur la periode."
         )
 
+    if report.open_details:
+        typer.echo("\nPositions encore ouvertes a la derniere seance :")
+        typer.echo(pd.DataFrame(report.open_details).to_string(index=False))
+        exposed = sum(item["valeur"] for item in report.open_details)
+        latent = sum(item["pnl_latent"] for item in report.open_details)
+        typer.echo(
+            f"  Capital expose : {exposed:,.2f} sur {report.final_equity:,.2f} "
+            f"({exposed / report.final_equity * 100.0:.0f} %) | "
+            f"P&L latent {latent:+,.2f}"
+        )
+
     # 5. Validation de perennite.
     payload = {
         "universe": universe,
@@ -217,6 +228,7 @@ def main(
             "total_return_pct": round(report.total_return_pct, 2),
             "metrics": {k: round(v, 4) for k, v in report.metrics.items()},
             "trades": [trade.to_dict() for trade in report.trades],
+            "open_positions": report.open_details,
         },
     }
 
