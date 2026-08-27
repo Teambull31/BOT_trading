@@ -42,6 +42,8 @@ def _trade(
     duration: int = 3,
     widened: bool = False,
     costs: float = 2.0,
+    target: float | None = None,
+    trailing: float | None = None,
 ) -> ClosedTrade:
     opened = datetime.now(UTC) - timedelta(days=days_ago)
     return ClosedTrade(
@@ -57,6 +59,8 @@ def _trade(
         costs=costs,
         exit_reason="manuel",
         highest_price=entry * 1.05,
+        target=target,
+        trailing_pct=trailing,
         stop_moved_against=widened,
     )
 
@@ -225,6 +229,66 @@ def test_oversized_positions_block_sizing_level(account):
     ]
     levels = {level.level.key: level for level in evaluate_progress(account.state).levels}
     assert not levels["dimensionnement"].achieved
+
+
+def _levels(state) -> dict:
+    return {status.level.key: status for status in evaluate_progress(state).levels}
+
+
+def test_asymmetry_level_grades_the_plan_not_the_outcome(account):
+    """Douze trades PERDANTS mais planifies asymetriques valident le palier.
+
+    Le gain moyen obtenu ne dit rien du process : sans pouvoir predictif, il
+    depend surtout du hasard. Ce que l'eleve choisit, c'est l'objectif qu'il
+    place en face de son stop.
+    """
+    account.state.history = [
+        _trade(symbol=f"S{i}", pnl=-4.0, entry=100.0, stop=98.0, target=105.0, days_ago=90 - i * 7)
+        for i in range(12)
+    ]
+    status = _levels(account.state)["asymetrie"]
+    assert status.achieved, status.detail
+
+
+def test_asymmetry_level_accepts_a_trailing_stop_as_the_plan(account):
+    """Un stop suiveur ne plafonne pas le gain : c'est le « laisser courir »."""
+    account.state.history = [
+        _trade(symbol=f"S{i}", pnl=1.0, entry=100.0, stop=98.0, trailing=8.0, days_ago=90 - i * 7)
+        for i in range(12)
+    ]
+    status = _levels(account.state)["asymetrie"]
+    assert status.achieved, status.detail
+    assert "suiveur" in status.detail
+
+
+def test_asymmetry_level_blocks_a_trade_without_any_plan(account):
+    account.state.history = [
+        _trade(symbol=f"S{i}", pnl=20.0, entry=100.0, stop=98.0, days_ago=90 - i * 7)
+        for i in range(12)
+    ]
+    status = _levels(account.state)["asymetrie"]
+    assert not status.achieved
+    assert "sans objectif ni stop suiveur" in status.detail
+
+
+def test_asymmetry_level_blocks_an_objective_smaller_than_the_risk(account):
+    """Viser 1 EUR pour en risquer 2 est le contraire de « couper court »."""
+    account.state.history = [
+        _trade(symbol=f"S{i}", pnl=1.0, entry=100.0, stop=98.0, target=101.0, days_ago=90 - i * 7)
+        for i in range(12)
+    ]
+    status = _levels(account.state)["asymetrie"]
+    assert not status.achieved
+    assert "0.5 fois" in status.detail
+
+
+def test_asymmetry_level_does_not_divide_by_a_null_planned_risk(account):
+    """Stop deja remonte au-dessus de l'entree : le risque planifie vaut zero."""
+    account.state.history = [
+        _trade(symbol=f"S{i}", pnl=5.0, entry=100.0, stop=104.0, target=110.0, days_ago=90 - i * 7)
+        for i in range(12)
+    ]
+    assert _levels(account.state)["asymetrie"].achieved
 
 
 def test_all_levels_have_distinct_keys():

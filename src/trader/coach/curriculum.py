@@ -17,6 +17,7 @@ la discipline se distingue statistiquement de la chance.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,9 @@ normale suffit a effacer le compte."""
 
 OVERTRADE_PER_WEEK: int = 5
 """Nombre de trades par semaine au-delà duquel on parle de surtrading."""
+
+MIN_PLANNED_R: float = 1.5
+"""Gain visé minimal, en multiples de la perte acceptée, décidé A L'ENTREE."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,21 +134,51 @@ def _check_patience(state: AccountState) -> tuple[bool, str]:
     return True, f"Jamais plus de {busiest} trades par semaine."
 
 
+def _planned_ratio(trade: ClosedTrade) -> float | None:
+    """Gain visé rapporté a la perte acceptée, tel qu'il etait decide A L'ENTREE.
+
+    `None` quand rien n'a ete planifie en face du stop : ni objectif, ni stop
+    suiveur. Ce trade-la n'a pas de sortie prevue par le haut, elle sera
+    improvisee — c'est exactement ce que le palier cherche a eliminer.
+
+    Un stop suiveur vaut l'infini : il ne pose aucun plafond au gain, c'est tout
+    son interet. Un risque planifie nul — stop deja remonte au-dessus du prix
+    d'entree — aussi, faute de quoi la division n'aurait pas de sens.
+    """
+    if trade.trailing_pct:
+        return math.inf
+    if trade.target is None:
+        return None
+    risk = trade.planned_risk
+    if risk <= 0:
+        return math.inf
+    return (trade.target - trade.entry_price) * trade.shares / risk
+
+
 def _check_asymmetry(state: AccountState) -> tuple[bool, str]:
     trades = state.history
     if len(trades) < 12:
         return False, f"{len(trades)}/12 trades clôturés."
-    wins = [t.pnl for t in trades if t.is_win]
-    losses = [abs(t.pnl) for t in trades if not t.is_win]
-    if not wins or not losses:
-        return False, "Il faut au moins un gain et une perte pour comparer."
-    avg_win, avg_loss = sum(wins) / len(wins), sum(losses) / len(losses)
-    if avg_win <= avg_loss:
+    planned = [(trade, _planned_ratio(trade)) for trade in trades]
+    unplanned = [trade for trade, ratio in planned if ratio is None]
+    if unplanned:
+        symbols = ", ".join(sorted({trade.symbol for trade in unplanned}))
         return False, (
-            f"Gain moyen {avg_win:,.2f} EUR contre perte moyenne {avg_loss:,.2f} EUR : "
-            "les pertes ne sont pas coupees assez court."
+            f"{len(unplanned)} trade(s) sans objectif ni stop suiveur : {symbols}. "
+            "Rien n'etait prevu en face du stop."
         )
-    return True, f"Gain moyen {avg_win:,.2f} EUR pour une perte moyenne de {avg_loss:,.2f} EUR."
+    weak = [(trade, ratio) for trade, ratio in planned if ratio < MIN_PLANNED_R]
+    if weak:
+        worst, worst_ratio = min(weak, key=lambda pair: pair[1])
+        return False, (
+            f"{len(weak)} trade(s) visaient moins de {MIN_PLANNED_R:.1f} fois le risque "
+            f"accepte (pire : {worst_ratio:.1f} fois sur {worst.symbol})."
+        )
+    trailing = sum(1 for trade in trades if trade.trailing_pct)
+    return True, (
+        f"Les {len(trades)} trades visaient au moins {MIN_PLANNED_R:.1f} fois la perte "
+        f"acceptée, dont {trailing} sans plafond grâce au stop suiveur."
+    )
 
 
 def _check_drawdown(state: AccountState) -> tuple[bool, str]:
@@ -224,9 +258,13 @@ LEVELS: tuple[Level, ...] = (
         5,
         "asymetrie",
         "Couper court, laisser courir",
-        "Sur 12 trades, obtenir un gain moyen supérieur à la perte moyenne.",
+        f"Sur 12 trades, viser dès l'entrée au moins {MIN_PLANNED_R:.1f} fois la perte "
+        "acceptée — par un objectif, ou par un stop suiveur qui ne plafonne rien.",
         "Comme aucun signal ne prédit la direction, le seul réglage qui reste est "
-        "l'asymétrie : perdre peu souvent ne sert à rien si l'on perd gros.",
+        "l'asymétrie : perdre peu souvent ne sert à rien si l'on perd gros. Et cette "
+        "asymétrie se décide à l'entrée. Noter le gain moyen OBTENU reviendrait à "
+        "noter la chance — sur douze trades sans pouvoir prédictif, il dépend surtout "
+        "du hasard ; ce que vous choisissez, c'est ce que vous mettez en face du stop.",
         _check_asymmetry,
     ),
     Level(
