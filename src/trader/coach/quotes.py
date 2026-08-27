@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from trader.equities.data import ETF_SYMBOLS
+from trader.equities.symbols import ETF_SYMBOLS
 from trader.logging_setup import get_logger
 
 log = get_logger(__name__)

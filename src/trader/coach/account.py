@@ -203,6 +203,16 @@ class AccountState:
     positions: list[Position] = field(default_factory=list)
     history: list[ClosedTrade] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
+    rev: int = 0
+    """Numero de revision, incremente a chaque ecriture.
+
+    Sert au mode heberge, ou le navigateur detient la copie de reference du
+    compte et le serveur une copie de travail jetable : comparer les revisions
+    est le seul moyen de refuser d'operer sur un etat perime, par exemple
+    quand deux instances du serveur se relaient et que l'une n'a jamais vu les
+    derniers trades. Un compte qui execute un ordre sur un historique tronque
+    afficherait des liquidites et un risque faux.
+    """
 
     @property
     def total_deposited(self) -> float:
@@ -223,6 +233,39 @@ class PaperAccount:
 
     # ------------------------------------------------------------ persistance
 
+    @staticmethod
+    def state_from_dict(raw: dict) -> AccountState:
+        """Reconstruit un etat a partir de sa forme serialisee."""
+        return AccountState(
+            cash=float(raw.get("cash", 0.0)),
+            deposits=[Deposit(**item) for item in raw.get("deposits", [])],
+            positions=[Position(**item) for item in raw.get("positions", [])],
+            history=[ClosedTrade(**item) for item in raw.get("history", [])],
+            created_at=raw.get("created_at", _now()),
+            rev=int(raw.get("rev", 0)),
+        )
+
+    def snapshot(self) -> dict:
+        """Etat complet serialisable — la forme ecrite sur disque, telle quelle.
+
+        C'est aussi ce que le navigateur conserve en mode heberge : une seule
+        representation, donc aucun risque qu'une copie oublie un champ que
+        l'autre attend.
+        """
+        return {
+            "cash": round(self.state.cash, 2),
+            "deposits": [asdict(item) for item in self.state.deposits],
+            "positions": [asdict(item) for item in self.state.positions],
+            "history": [asdict(item) for item in self.state.history],
+            "created_at": self.state.created_at,
+            "rev": self.state.rev,
+        }
+
+    def restore(self, raw: dict) -> None:
+        """Remplace l'etat courant par un instantane recu, et l'ecrit."""
+        self.state = self.state_from_dict(raw)
+        self.save()
+
     def _load(self) -> AccountState:
         if not self.store.exists():
             return AccountState()
@@ -231,26 +274,16 @@ class PaperAccount:
         except (json.JSONDecodeError, OSError) as error:
             log.warning("account_load_failed", error=str(error))
             return AccountState()
-        return AccountState(
-            cash=float(raw.get("cash", 0.0)),
-            deposits=[Deposit(**item) for item in raw.get("deposits", [])],
-            positions=[Position(**item) for item in raw.get("positions", [])],
-            history=[ClosedTrade(**item) for item in raw.get("history", [])],
-            created_at=raw.get("created_at", _now()),
-        )
+        return self.state_from_dict(raw)
 
     def save(self) -> None:
-        """Ecrit l'etat sur disque, de facon atomique."""
+        """Ecrit l'etat sur disque, de facon atomique, et avance la revision."""
+        self.state.rev += 1
         self.store.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "cash": round(self.state.cash, 2),
-            "deposits": [asdict(item) for item in self.state.deposits],
-            "positions": [asdict(item) for item in self.state.positions],
-            "history": [asdict(item) for item in self.state.history],
-            "created_at": self.state.created_at,
-        }
         temporary = self.store.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        temporary.write_text(
+            json.dumps(self.snapshot(), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         temporary.replace(self.store)
 
     # ------------------------------------------------------------ operations
@@ -543,6 +576,11 @@ class PaperAccount:
         }
 
     def reset(self) -> None:
-        """Repart de zero — l'entrainement doit pouvoir être recommence."""
-        self.state = AccountState()
+        """Repart de zero — l'entrainement doit pouvoir être recommence.
+
+        La revision, elle, continue d'avancer : la faire reculer ferait passer
+        la remise a zero pour un etat perime, et le navigateur reinjecterait
+        aussitot le compte que l'utilisateur venait d'effacer.
+        """
+        self.state = AccountState(rev=self.state.rev)
         self.save()

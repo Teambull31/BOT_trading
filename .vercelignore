@@ -1,0 +1,30 @@
+# La fonction sans serveur n'embarque que le mode entrainement (trader.coach et
+# trader.webapp). Tout le reste appartient a la chaine de backtest, aux donnees
+# locales ou a l'outillage, et n'est jamais importe par le serveur web :
+# l'embarquer ferait grossir la fonction sans rien apporter.
+pyproject.toml
+uv.lock
+tests/
+scripts/
+config/
+data/
+logs/
+artifacts/
+deploy/
+Dockerfile
+docker-compose.yml
+src/trader/adaptation/
+src/trader/backtest/
+src/trader/data/
+src/trader/execution/
+src/trader/models.py
+src/trader/monitoring/
+src/trader/main.py
+src/trader/orchestrator.py
+src/trader/portfolio.py
+src/trader/config.py
+src/trader/regime/
+src/trader/risk/
+src/trader/strategy/
+src/trader/utils/
+src/trader/equities/data.py

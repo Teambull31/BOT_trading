@@ -1,0 +1,8 @@
+# Dependances de l'application d'entrainement hebergee UNIQUEMENT.
+# Le reste du depot (pandas, scikit-learn, ccxt...) sert au backtest et n'est
+# jamais importe par le serveur web : l'embarquer ferait grossir la fonction
+# sans serveur pour rien.
+fastapi>=0.141.1
+httpx>=0.27
+pydantic>=2.7
+structlog>=24.1

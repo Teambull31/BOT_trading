@@ -23,6 +23,16 @@
   </div>
 </header>
 
+<!-- Visible uniquement en ligne : là, c'est le navigateur qui détient le compte. -->
+<div id="local-notice" class="local-notice hidden">
+  <strong>Votre compte est enregistré dans ce navigateur.</strong>
+  Il n'est envoyé à personne et personne d'autre ne le voit — mais effacer les
+  données du site, ou changer de navigateur, efface votre entraînement.
+  <button type="button" id="export-account" class="link-btn">Enregistrer une sauvegarde</button>
+  <button type="button" id="import-account" class="link-btn">Restaurer une sauvegarde</button>
+  <input type="file" id="import-file" accept="application/json" hidden>
+</div>
+
 <!-- Premier écran : saisie manuelle du capital -->
 <section id="onboarding" class="onboarding hidden">
   <div class="card onboarding-card">

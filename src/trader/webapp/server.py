@@ -1,16 +1,29 @@
-"""Serveur local du mode d'entrainement.
+"""Serveur du mode d'entrainement, en local ou heberge.
 
-Application volontairement LOCALE et mono-utilisateur : aucune authentification,
-aucune donnee envoyee ailleurs, un fichier JSON sur disque. Ce n'est pas un
-service en ligne et il ne doit pas etre expose sur un reseau public.
+Deux modes, un seul code :
+
+- **local** (defaut) : un compte unique dans un fichier JSON, aucune
+  authentification, rien qui sorte de la machine.
+- **heberge** (`accounts_dir=`) : le serveur ne detient plus la reference. Le
+  navigateur conserve son compte et l'envoie ; le serveur n'en garde qu'une
+  copie de travail jetable, dans un fichier par navigateur.
+
+Ce second mode existe parce qu'une fonction sans serveur n'a pas de disque
+durable et pas d'authentification : un fichier unique partage voudrait dire un
+seul compte pour tous les visiteurs, efface a chaque redemarrage. Chacun a donc
+le sien, et c'est son navigateur qui le garde.
+
+Dans les deux cas : argent fictif, aucun ordre reel, aucun courtier.
 """
 
 from __future__ import annotations
 
+import re
+from contextvars import ContextVar
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -66,10 +79,77 @@ class SizeRequest(BaseModel):
     risk_pct: float = Field(default=1.0, gt=0, le=100)
 
 
-def create_app(store: Path | str | None = None) -> FastAPI:
-    """Construit l'application. `store` permet de l'isoler dans les tests."""
+class RestoreRequest(BaseModel):
+    snapshot: dict
+    """Instantane complet du compte, tel que renvoye par `/api/snapshot`."""
+
+
+ACCOUNT_HEADER = "X-Coach-Account"
+REVISION_HEADER = "X-Coach-Rev"
+ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+"""Un identifiant de compte devient un nom de fichier : il est verifie et non
+assaini. Tout ce qui n'est pas alphanumerique, tiret ou souligne est refuse,
+faute de quoi un « ../ » ferait ecrire le compte ailleurs sur le disque."""
+
+_CURRENT: ContextVar[PaperAccount] = ContextVar("compte_de_la_requete")
+
+
+class _RequestAccount:
+    """Renvoie vers le compte de la requete en cours.
+
+    Les routes manipulent `account` sans savoir s'il vient d'un fichier local
+    unique ou du navigateur qui appelle : la resolution se fait une fois, dans
+    l'intergiciel, et nulle part ailleurs.
+    """
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(_CURRENT.get(), name)
+
+
+def create_app(
+    store: Path | str | None = None, *, accounts_dir: Path | str | None = None
+) -> FastAPI:
+    """Construit l'application.
+
+    `store` isole le compte unique du mode local (utilise par les tests).
+    `accounts_dir` bascule en mode heberge : un fichier de travail par
+    navigateur, sous ce repertoire.
+    """
     app = FastAPI(title="Coach Trading — zero to hero", docs_url="/api/docs")
-    account = PaperAccount(store) if store else PaperAccount()
+    hosted = accounts_dir is not None
+    workdir = Path(accounts_dir) if hosted else None
+    shared = None if hosted else (PaperAccount(store) if store else PaperAccount())
+    account = _RequestAccount()
+
+    @app.middleware("http")
+    async def bind_account(request: Request, call_next):
+        """Attache le bon compte a la requete, et refuse d'operer a l'aveugle."""
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        if not hosted:
+            _CURRENT.set(shared)
+            return await call_next(request)
+
+        identifier = request.headers.get(ACCOUNT_HEADER, "")
+        if not ACCOUNT_ID.match(identifier):
+            return JSONResponse(
+                {"detail": "identifiant de compte absent ou invalide"}, status_code=400
+            )
+        current = PaperAccount(workdir / f"{identifier}.json")
+        try:
+            client_rev = int(request.headers.get(REVISION_HEADER, "0"))
+        except ValueError:
+            client_rev = 0
+        # Le navigateur a plus recent que nous : notre copie de travail a ete
+        # perdue (instance neuve, disque jetable). On ne devine pas la
+        # difference, on la reclame — operer sur l'ancien etat afficherait des
+        # liquidites fausses et pourrait rouvrir un trade deja clos.
+        if client_rev > current.state.rev and request.url.path != "/api/restore":
+            return JSONResponse(
+                {"detail": "etat perime cote serveur", "code": "stale_state"}, status_code=409
+            )
+        _CURRENT.set(current)
+        return await call_next(request)
 
     def current_prices() -> dict[str, float]:
         """Cours des seules positions detenues — pas de requete inutile."""
@@ -125,10 +205,17 @@ def create_app(store: Path | str | None = None) -> FastAPI:
             "progress": progress.to_dict(),
             "patterns": [lesson.to_dict() for lesson in recurring_patterns(account.state)],
             "has_capital": account.state.total_deposited > 0,
+            # L'interface doit prevenir que le compte vit dans le navigateur :
+            # une progression de trente trades effacee par un nettoyage du
+            # cache, sans avertissement, serait une trahison du parcours.
+            "hosted": hosted,
             # Stops declenches pendant ce rafraichissement : l'interface doit les
             # montrer immediatement, avec leur debrief. Une sortie subie sans
             # explication est une occasion d'apprendre perdue.
             "stopped": [debrief_trade(trade, account.state).to_dict() for trade in stopped],
+            # Copie de reference renvoyee au navigateur, qui la conserve. En
+            # mode local elle est simplement ignoree par l'interface.
+            "snapshot": account.snapshot(),
             "targets_reached": [
                 {
                     "id": position.id,
@@ -316,6 +403,26 @@ def create_app(store: Path | str | None = None) -> FastAPI:
             if trade.id == trade_id:
                 return debrief_trade(trade, account.state).to_dict()
         raise HTTPException(status_code=404, detail="trade introuvable")
+
+    @app.get("/api/snapshot")
+    def get_snapshot() -> dict:
+        """Instantane complet du compte, a conserver cote navigateur."""
+        return {"snapshot": account.snapshot()}
+
+    @app.post("/api/restore")
+    def post_restore(request: RestoreRequest) -> dict:
+        """Reinjecte l'instantane detenu par le navigateur.
+
+        Seul point d'entree exempte du controle de revision : c'est lui qui
+        repare l'ecart, il ne peut donc pas exiger qu'il n'existe pas.
+        """
+        try:
+            account.restore(request.snapshot)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=400, detail=f"instantane illisible : {error}"
+            ) from error
+        return {"ok": True, "rev": account.state.rev}
 
     @app.post("/api/reset")
     def post_reset() -> dict:

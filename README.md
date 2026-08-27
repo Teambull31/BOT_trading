@@ -338,6 +338,38 @@ etre expose sur un reseau.
   process — stop defini avant l'entree, dimensionnement, discipline, patience,
   asymetrie, resilience, regularite sur trente trades.
 
+### Mise en ligne (Vercel)
+
+L'application peut tourner en fonction sans serveur : `api/index.py` en est le
+point d'entree, `vercel.json` la configuration, `requirements.txt` les seules
+dependances embarquees (FastAPI, httpx, pydantic, structlog — ni pandas ni
+scikit-learn, que le serveur web n'importe jamais).
+
+Deux contraintes de l'hebergement ont impose une conception differente du mode
+local, et il faut les avoir en tete avant de mettre l'application en ligne :
+
+- **Pas de disque durable.** Le fichier JSON du mode local disparaitrait a tout
+  moment, et avec lui l'historique — or le dernier palier du parcours demande
+  trente trades. C'est donc le NAVIGATEUR qui detient le compte de reference,
+  dans son `localStorage` ; le serveur n'en garde qu'une copie de travail
+  jetable. Chaque requete porte l'identifiant du compte (`X-Coach-Account`) et
+  son numero de revision (`X-Coach-Rev`) ; si la copie serveur est perimee, le
+  serveur repond 409 et le navigateur reinjecte son instantane avant de
+  reessayer.
+- **Pas d'authentification.** Un compte partage laisserait chaque visiteur
+  trader l'argent des autres. L'identifiant tire par le navigateur isole les
+  comptes ; il est *verifie* (`^[A-Za-z0-9_-]{8,64}$`) et non assaini, parce
+  qu'il devient un nom de fichier.
+
+Consequence a dire honnetement a l'utilisateur, et c'est ce que fait le bandeau
+affiche en ligne : effacer les donnees du site ou changer de navigateur efface
+l'entrainement. Les boutons « Enregistrer / Restaurer une sauvegarde » exportent
+et reimportent le compte en JSON, pour que l'avertissement soit suivi d'un moyen
+d'agir.
+
+Le mode local, lui, ne change pas : sans `accounts_dir`, `create_app()` sert un
+compte unique sur disque et n'exige aucun en-tete.
+
 ### Probabilite de reussite et effet de levier (`signal_probability.py`)
 
 ```bash

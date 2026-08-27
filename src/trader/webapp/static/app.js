@@ -9,13 +9,77 @@ let state = null;
 let riskPct = 1;
 let pendingPlan = null;
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+/* ------------------------------------------------- compte detenu localement
+
+   En ligne, le serveur n'a pas de disque durable et ne demande aucun mot de
+   passe : s'il gardait la reference, tous les visiteurs partageraient le meme
+   compte et le perdraient a chaque redemarrage. C'est donc CE navigateur qui
+   detient le compte ; le serveur n'en manipule qu'une copie de travail.
+
+   Consequence a assumer : effacer les donnees du site efface l'entrainement.
+   En local, le fichier JSON reste la reference et tout ce bloc ne fait rien de
+   plus que recopier un etat que le serveur possede deja. */
+
+const STORE_KEY = 'coach.snapshot';
+const ID_KEY = 'coach.account';
+
+function accountId() {
+  let id = localStorage.getItem(ID_KEY);
+  if (!id) {
+    id = (crypto.randomUUID?.() || String(Date.now()) + Math.random().toString(36).slice(2))
+      .replace(/[^A-Za-z0-9_-]/g, '');
+    localStorage.setItem(ID_KEY, id);
+  }
+  return id;
+}
+
+function savedSnapshot() {
+  try {
+    return JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function keepSnapshot(snapshot) {
+  if (!snapshot) return;
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(snapshot));
+  } catch (error) {
+    // Quota plein ou stockage refuse : on ne casse pas la session en cours,
+    // mais l'utilisateur doit savoir que rien ne sera conserve.
+    console.warn('sauvegarde locale impossible', error);
+  }
+}
+
+async function send(path, options) {
+  const snapshot = savedSnapshot();
+  return fetch(path, {
     ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Coach-Account': accountId(),
+      'X-Coach-Rev': String(snapshot?.rev ?? 0),
+      ...(options.headers || {}),
+    },
   });
+}
+
+async function api(path, options = {}) {
+  let response = await send(path, options);
+  if (response.status === 409) {
+    // Le serveur a perdu sa copie de travail. On lui rend la notre, puis on
+    // rejoue l'appel : une seule fois, pour qu'une desynchronisation
+    // persistante remonte en erreur au lieu de boucler en silence.
+    const snapshot = savedSnapshot();
+    if (snapshot) {
+      await send('/api/restore', { method: 'POST', body: JSON.stringify({ snapshot }) });
+      response = await send(path, options);
+    }
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.detail || `erreur ${response.status}`);
+  if (body.snapshot) keepSnapshot(body.snapshot);
   return body;
 }
 
@@ -426,10 +490,12 @@ async function refresh() {
   if (!state.has_capital) {
     $('onboarding').classList.remove('hidden');
     $('app').classList.add('hidden');
+    $('local-notice').classList.toggle('hidden', !state.hosted);
     return;
   }
   $('onboarding').classList.add('hidden');
   $('app').classList.remove('hidden');
+  $('local-notice').classList.toggle('hidden', !state.hosted);
   renderStats(state.performance);
   renderMission(state.progress);
   renderPositions(state.positions);
@@ -451,7 +517,55 @@ async function deposit(amount) {
   }
 }
 
+/* ------------------------------------------------------- sauvegarde fichier
+
+   Prevenir que le compte vit dans le navigateur ne suffit pas : sans moyen
+   d'en sortir une copie, l'avertissement ne fait que decrire la perte a
+   venir. L'export produit exactement l'instantane que le serveur sait relire. */
+
+function exportAccount() {
+  const snapshot = savedSnapshot();
+  if (!snapshot) {
+    alert("Rien à sauvegarder pour l'instant : versez d'abord un capital d'entraînement.");
+    return;
+  }
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
+  );
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `coach-trading-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function importAccount(file) {
+  try {
+    const snapshot = JSON.parse(await file.text());
+    if (typeof snapshot?.cash !== 'number' || !Array.isArray(snapshot?.history)) {
+      throw new Error("ce fichier n'est pas une sauvegarde de compte");
+    }
+    // La revision reprend au-dessus de celle deja connue, sinon le serveur
+    // prendrait la sauvegarde restauree pour un etat perime.
+    snapshot.rev = Math.max(snapshot.rev || 0, (savedSnapshot()?.rev || 0) + 1);
+    keepSnapshot(snapshot);
+    await api('/api/restore', { method: 'POST', body: JSON.stringify({ snapshot }) });
+    await refresh();
+    await renderWatchlist();
+  } catch (error) {
+    alert(`Restauration impossible : ${error.message}`);
+  }
+}
+
 /* ---------------------------------------------------------------- ecouteurs */
+
+$('export-account').addEventListener('click', exportAccount);
+$('import-account').addEventListener('click', () => $('import-file').click());
+$('import-file').addEventListener('change', (event) => {
+  const file = event.target.files?.[0];
+  if (file) importAccount(file);
+  event.target.value = '';
+});
 
 document.querySelectorAll('.chip[data-amount]').forEach((chip) =>
   chip.addEventListener('click', () => deposit(parseFloat(chip.dataset.amount)))

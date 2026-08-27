@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from trader.equities.symbols import ETF_SYMBOLS
 from trader.logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -42,10 +43,6 @@ def _parse_money(value: str) -> float:
     if cleaned in ("", "N/A", "--"):
         return float("nan")
     return float(cleaned)
-
-
-ETF_SYMBOLS: frozenset[str] = frozenset({"SPY", "QQQ", "GLD", "IWM", "TLT", "VTI", "EFA"})
-"""Symboles servis par l'API sous la classe d'actif 'etf' et non 'stocks'."""
 
 
 def fetch_history(
