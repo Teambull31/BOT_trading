@@ -64,23 +64,54 @@ import io
 import sys
 import tarfile
 import tempfile
+import urllib.request
 from pathlib import Path
 
 _BUNDLE = """\
 __BUNDLE__"""
 
+# Filet de securite : si la charge embarquee ci-dessus etait abimee en route,
+# la meme arborescence reste telechargeable depuis le depot public.
+_FALLBACK_URL = "__FALLBACK__"
+
 _TMP = Path(tempfile.gettempdir())
 _SRC = _TMP / "coach-src"
 
 
+def _from_bundle() -> None:
+    """Source embarquee : aucun reseau, donc aucun point de panne au demarrage."""
+    # b64decode ignore les retours a la ligne du litteral ci-dessus.
+    raw = io.BytesIO(base64.b64decode(_BUNDLE))
+    with tarfile.open(fileobj=raw, mode="r:xz") as tar:
+        tar.extractall(_SRC, filter="data")
+
+
+def _from_github() -> None:
+    """Repli : archive publique de la branche, reduite au paquet `trader`."""
+    with urllib.request.urlopen(_FALLBACK_URL, timeout=30) as resp:
+        raw = io.BytesIO(resp.read())
+    with tarfile.open(fileobj=raw, mode="r:gz") as tar:
+        keep = []
+        for member in tar.getmembers():
+            parts = member.name.split("/")
+            if len(parts) > 3 and parts[1] == "src" and parts[2] == "trader":
+                member.name = "/".join(parts[2:])
+                keep.append(member)
+        tar.extractall(_SRC, members=keep, filter="data")
+
+
 def _unpack() -> Path:
-    """Deplie les sources embarquees, une fois par instance."""
-    if not (_SRC / "trader" / "webapp" / "server.py").exists():
-        _SRC.mkdir(parents=True, exist_ok=True)
-        # b64decode ignore les retours a la ligne du litteral ci-dessus.
-        raw = io.BytesIO(base64.b64decode(_BUNDLE))
-        with tarfile.open(fileobj=raw, mode="r:xz") as tar:
-            tar.extractall(_SRC, filter="data")
+    """Deplie les sources, une fois par instance."""
+    marker = _SRC / "trader" / "webapp" / "server.py"
+    if marker.exists():
+        return _SRC
+    _SRC.mkdir(parents=True, exist_ok=True)
+    try:
+        _from_bundle()
+    except Exception:
+        _from_github()
+    if not marker.exists():
+        raise RuntimeError("sources introuvables apres depliage")
     return _SRC
 
 
@@ -90,6 +121,11 @@ from trader.webapp.server import create_app  # noqa: E402
 
 app = create_app(accounts_dir=_TMP / "coach-accounts")
 '''
+
+FALLBACK_URL = (
+    "https://codeload.github.com/Teambull31/BOT_trading/tar.gz/"
+    "refs/heads/claude/new-session-wqnqqb"
+)
 
 VERCEL_JSON = """{
   "$schema": "https://openapi.vercel.sh/vercel.json",
@@ -131,7 +167,9 @@ def main(out: Path) -> None:
     # Replie sur 120 colonnes : un litteral de 47 000 caracteres sur une seule
     # ligne est illisible et fragile a transporter.
     folded = "\n".join(bundle[i : i + 120] for i in range(0, len(bundle), 120))
-    body = LOADER.replace("__BUNDLE__", folded + "\n")
+    body = LOADER.replace("__BUNDLE__", folded + "\n").replace(
+        "__FALLBACK__", FALLBACK_URL
+    )
     (out / "api" / "index.py").write_text(body, encoding="utf-8")
     (out / "vercel.json").write_text(VERCEL_JSON, encoding="utf-8")
     (out / "requirements.txt").write_text(
