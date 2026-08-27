@@ -539,3 +539,161 @@ def test_no_reward_ratio_lesson_when_nothing_was_risked(account):
     assert trade.planned_risk == 0.0
     lessons = debrief_trade(trade, account.state).lessons
     assert not any("rapport gain/perte visé" in lesson.title for lesson in lessons)
+
+
+def _quote(price: float, symbol: str = "AAA") -> Quote:
+    """Cotation minimale pour les tests d'analyse de plan."""
+    return Quote(
+        symbol=symbol,
+        price=price,
+        change=0.0,
+        change_pct=0.0,
+        previous_close=price,
+        market_status="Market Open",
+        is_real_time=True,
+        timestamp="",
+    )
+
+
+# ------------------------------------------------------------- stop suiveur
+
+
+def test_trailing_stop_only_ever_rises(account):
+    """Le seul mouvement qu'un suiveur autorise est celui qui réduit le risque.
+
+    C'est ce qui le sépare d'un stop déplacé à la main : il ne peut jamais
+    devenir le prétexte à ne pas matérialiser une perte.
+    """
+    account.open_position("AAA", 1.0, 100.0, stop=90.0, trailing_pct=10.0)
+    position = account.state.positions[0]
+    assert position.stop == pytest.approx(position.entry_price * 0.9)
+
+    account.mark({"AAA": 120.0})
+    assert position.stop == pytest.approx(108.0)
+
+    account.mark({"AAA": 95.0})
+    assert position.stop == pytest.approx(108.0), "un suiveur ne redescend jamais"
+
+
+def test_trailing_stop_tighter_than_typed_stop_governs_from_entry(account):
+    """Le stop en vigueur à l'ouverture est le plus serré des deux."""
+    position = account.open_position("AAA", 1.0, 100.0, stop=80.0, trailing_pct=5.0)
+    assert position.stop == pytest.approx(position.entry_price * 0.95)
+    assert position.stop > 80.0
+
+
+def test_looser_trailing_stop_does_not_widen_the_typed_stop(account):
+    """Armer un suiveur large ne doit jamais relâcher un stop déjà serré."""
+    position = account.open_position("AAA", 1.0, 100.0, stop=98.0, trailing_pct=20.0)
+    assert position.stop == pytest.approx(98.0)
+
+
+def test_removing_the_trail_keeps_the_ground_it_took(account):
+    """Retirer le suiveur est permis ; rendre le stop qu'il a remonté ne l'est pas."""
+    account.open_position("AAA", 1.0, 100.0, stop=90.0, trailing_pct=10.0)
+    position = account.state.positions[0]
+    account.mark({"AAA": 130.0})
+    assert position.stop == pytest.approx(117.0)
+
+    account.set_trailing(position.id, None)
+    assert position.trailing_pct is None
+    assert position.stop == pytest.approx(117.0)
+
+
+def test_arming_a_trail_anchors_on_the_current_price_not_a_past_peak(account):
+    """Un suiveur commence à compter là où on le pose.
+
+    Sans cet ancrage, armer un suiveur sur une position qui a reflué placerait
+    le stop au-dessus du cours et solderait la position sur le champ, à un
+    niveau que personne n'a choisi.
+    """
+    account.open_position("AAA", 1.0, 100.0, stop=90.0)
+    position = account.state.positions[0]
+    account.mark({"AAA": 150.0})
+    account.mark({"AAA": 120.0})
+    assert position.highest_price == pytest.approx(150.0)
+
+    account.set_trailing(position.id, 5.0, price=120.0)
+    assert position.stop == pytest.approx(114.0)
+    assert position.stop < 120.0, "armer un suiveur ne doit pas sortir la position"
+    assert not account.check_stops({"AAA": 120.0})
+
+
+def test_trailing_pct_must_be_a_sane_distance(account):
+    with pytest.raises(ValueError):
+        account.open_position("AAA", 1.0, 100.0, stop=90.0, trailing_pct=0.0)
+    with pytest.raises(ValueError):
+        account.open_position("BBB", 1.0, 100.0, stop=90.0, trailing_pct=100.0)
+    account.open_position("CCC", 1.0, 100.0, stop=90.0)
+    with pytest.raises(ValueError):
+        account.set_trailing(account.state.positions[0].id, 150.0)
+
+
+def test_trail_survives_a_reload(account, tmp_path):
+    """Le suiveur et son ancrage doivent traverser un redémarrage."""
+    account.open_position("AAA", 1.0, 100.0, stop=90.0, trailing_pct=8.0)
+    account.mark({"AAA": 140.0})
+    reloaded = PaperAccount(tmp_path / "account.json")
+    position = reloaded.state.positions[0]
+    assert position.trailing_pct == pytest.approx(8.0)
+    assert position.trail_high == pytest.approx(140.0)
+    assert position.stop == pytest.approx(128.8)
+
+
+def test_a_position_written_before_trailing_existed_still_loads(account, tmp_path):
+    """Un fichier sans `trail_high` ne doit pas rendre le suiveur inopérant."""
+    account.open_position("AAA", 1.0, 100.0, stop=90.0)
+    store = tmp_path / "account.json"
+    payload = json.loads(store.read_text(encoding="utf-8"))
+    for position in payload["positions"]:
+        position.pop("trail_high", None)
+        position.pop("trailing_pct", None)
+    store.write_text(json.dumps(payload), encoding="utf-8")
+
+    reloaded = PaperAccount(store)
+    position = reloaded.state.positions[0]
+    assert position.trail_high == pytest.approx(position.highest_price)
+    reloaded.set_trailing(position.id, 10.0, price=100.0)
+    assert position.stop == pytest.approx(90.0)
+
+
+# ----------------------------------------------- le suiveur dit la vérité
+
+
+def test_review_computes_the_risk_on_the_stop_actually_in_force(account):
+    """Afficher un risque que le compte ne court pas serait le pire mensonge ici."""
+    plan = TradePlan(symbol="AAA", shares=10.0, price=100.0, stop=80.0, trailing_pct=5.0)
+    assert plan.effective_stop == pytest.approx(95.0)
+    assert plan.trailing_overrides_stop
+    assert plan.risk_amount == pytest.approx(50.0)
+    assert plan.stop_distance_pct == pytest.approx(5.0)
+
+
+def test_review_warns_when_the_trail_replaces_the_typed_stop(account):
+    plan = TradePlan(symbol="AAA", shares=1.0, price=100.0, stop=80.0, trailing_pct=5.0)
+    quote = _quote(100.0)
+    review = review_plan(plan, account, quote, {})
+    warnings = [a for a in review.advices if a.severity is Severity.WARNING]
+    assert any("remplace votre stop" in advice.title for advice in warnings)
+
+
+def test_review_stays_silent_about_a_trail_that_changes_nothing(account):
+    """Un suiveur plus large que le stop saisi ne remplace rien : ne pas crier."""
+    plan = TradePlan(symbol="AAA", shares=1.0, price=100.0, stop=98.0, trailing_pct=20.0)
+    quote = _quote(100.0)
+    review = review_plan(plan, account, quote, {})
+    assert not any("remplace votre stop" in advice.title for advice in review.advices)
+    assert any(advice.title.startswith("Stop suiveur à") for advice in review.advices)
+
+
+def test_debrief_names_what_the_trail_cost_and_what_it_bought(account):
+    """Un suiveur laisse toujours une part du plus haut : c'est son prix, pas son défaut."""
+    account.deposit(3000.0)
+    account.open_position("AAA", 1.0, 100.0, stop=90.0, trailing_pct=10.0)
+    account.mark({"AAA": 130.0})
+    trade = account.check_stops({"AAA": 116.0})[0]
+
+    assert trade.trailing_pct == pytest.approx(10.0)
+    assert trade.pnl > 0, "le suiveur a verrouillé un gain"
+    lessons = debrief_trade(trade, account.state).lessons
+    assert any("suiveur à 10.0 %" in lesson.title for lesson in lessons)

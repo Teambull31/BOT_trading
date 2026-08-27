@@ -37,6 +37,7 @@ class PlanRequest(BaseModel):
     shares: float = Field(gt=0)
     stop: float = Field(gt=0)
     target: float | None = None
+    trailing_pct: float | None = Field(default=None, gt=0, lt=100)
 
 
 class OpenRequest(PlanRequest):
@@ -51,6 +52,12 @@ class CloseRequest(BaseModel):
 class StopRequest(BaseModel):
     position_id: str
     stop: float = Field(gt=0)
+
+
+class TrailingRequest(BaseModel):
+    position_id: str
+    trailing_pct: float | None = Field(default=None, gt=0, lt=100)
+    """None retire le stop suiveur ; le stop deja remonte, lui, reste en place."""
 
 
 class SizeRequest(BaseModel):
@@ -99,6 +106,7 @@ def create_app(store: Path | str | None = None) -> FastAPI:
                     "price": round(price, 4),
                     "stop": round(position.stop, 4),
                     "target": round(position.target, 4) if position.target else None,
+                    "trailing_pct": position.trailing_pct,
                     "value": round(position.value(price), 2),
                     "unrealised": round(position.unrealised(price), 2),
                     "unrealised_pct": round(position.unrealised_pct(price), 2),
@@ -214,6 +222,7 @@ def create_app(store: Path | str | None = None) -> FastAPI:
             price=quote.price,
             stop=request.stop,
             target=request.target,
+            trailing_pct=request.trailing_pct,
         )
         review = review_plan(plan, account, quote, current_prices())
         return {**review.to_dict(), "quote": quote.to_dict()}
@@ -230,6 +239,7 @@ def create_app(store: Path | str | None = None) -> FastAPI:
                 request.stop,
                 target=request.target,
                 rationale=request.rationale,
+                trailing_pct=request.trailing_pct,
             )
         except QuoteError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -239,6 +249,10 @@ def create_app(store: Path | str | None = None) -> FastAPI:
             "ok": True,
             "position_id": position.id,
             "entry_price": round(position.entry_price, 4),
+            # Le stop suiveur peut avoir resserre le stop des l'entree : c'est
+            # celui-la qui fait foi, pas celui saisi dans le formulaire.
+            "stop": round(position.stop, 4),
+            "trailing_pct": position.trailing_pct,
         }
 
     @app.post("/api/stop")
@@ -252,6 +266,33 @@ def create_app(store: Path | str | None = None) -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {"ok": True, "stop": position.stop, "widened": request.stop < before}
+
+    @app.post("/api/trailing")
+    def post_trailing(request: TrailingRequest) -> dict:
+        """Active, ajuste ou retire le stop suiveur d'une position ouverte.
+
+        Le cours du moment est recupere ici : c'est lui qui ancre un suiveur
+        que l'on arme, sans quoi le stop se poserait sur un sommet passe.
+        """
+        try:
+            position = account.find_position(request.position_id)
+            price = None
+            try:
+                price = fetch_quote(position.symbol).price
+            except QuoteError:
+                # Sans cotation, on n'invente pas d'ancrage : `set_trailing`
+                # retombe sur le prix d'entree, jamais sur un sommet passe.
+                log.warning("trailing_sans_cotation", symbol=position.symbol)
+            position = account.set_trailing(request.position_id, request.trailing_pct, price)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "ok": True,
+            "trailing_pct": position.trailing_pct,
+            "stop": round(position.stop, 4),
+        }
 
     @app.post("/api/close")
     def post_close(request: CloseRequest) -> dict:

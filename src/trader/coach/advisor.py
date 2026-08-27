@@ -63,19 +63,41 @@ class TradePlan:
     price: float
     stop: float
     target: float | None = None
+    trailing_pct: float | None = None
+    """Distance du stop suiveur envisagé, en % sous le plus haut atteint."""
 
     @property
     def notional(self) -> float:
         return self.shares * self.price
 
     @property
+    def effective_stop(self) -> float:
+        """Stop RÉELLEMENT en vigueur dès l'entrée.
+
+        Un stop suiveur plus serré que le stop saisi gouverne immédiatement.
+        Tout ce qui suit — risque, dimensionnement, rapport gain/perte — se
+        calcule donc sur ce niveau-là : afficher un risque que le compte ne
+        court pas serait le mensonge le plus utile à corriger dans cette app.
+        """
+        if not self.trailing_pct:
+            return self.stop
+        return max(self.stop, self.price * (1.0 - self.trailing_pct / 100.0))
+
+    @property
+    def trailing_overrides_stop(self) -> bool:
+        """Le suiveur est-il plus serré que le stop saisi ?"""
+        return self.effective_stop > self.stop
+
+    @property
     def risk_amount(self) -> float:
-        """Perte si le stop est touché."""
-        return (self.price - self.stop) * self.shares
+        """Perte si le stop en vigueur est touché."""
+        return (self.price - self.effective_stop) * self.shares
 
     @property
     def stop_distance_pct(self) -> float:
-        return (self.price - self.stop) / self.price * 100.0 if self.price > 0 else 0.0
+        if self.price <= 0:
+            return 0.0
+        return (self.price - self.effective_stop) / self.price * 100.0
 
     @property
     def reward_risk(self) -> float | None:
@@ -110,6 +132,8 @@ class Review:
             "position_pct": round(self.position_pct, 2),
             "risk_amount": round(self.plan.risk_amount, 2),
             "stop_distance_pct": round(self.plan.stop_distance_pct, 2),
+            "effective_stop": round(self.plan.effective_stop, 4),
+            "trailing_overrides_stop": self.plan.trailing_overrides_stop,
             "reward_risk": round(self.plan.reward_risk, 2) if self.plan.reward_risk else None,
             "advices": [advice.to_dict() for advice in self.advices],
         }
@@ -170,6 +194,31 @@ def review_plan(
                 "Position déjà ouverte",
                 f"Vous détenez déjà {plan.symbol}. Renforcer une position perdante "
                 "double la mise sur une décision qui se révèle fausse.",
+            )
+        )
+
+    # --- Stop suiveur -------------------------------------------------------
+    if plan.trailing_overrides_stop:
+        advices.append(
+            Advice(
+                Severity.WARNING,
+                f"Le suiveur à {plan.trailing_pct:.1f} % remplace votre stop",
+                f"Vous avez saisi {plan.stop:,.2f}, mais un suiveur à "
+                f"{plan.trailing_pct:.1f} % impose {plan.effective_stop:,.2f} dès "
+                f"l'entrée. Le risque affiché ici ({plan.risk_amount:,.2f} EUR) est "
+                "calculé sur ce niveau-là, le seul en vigueur. Si vous vouliez la "
+                "marge plus large, élargissez le suiveur plutôt que le stop.",
+            )
+        )
+    elif plan.trailing_pct:
+        advices.append(
+            Advice(
+                Severity.INFO,
+                f"Stop suiveur à {plan.trailing_pct:.1f} %",
+                "Le stop remontera avec le cours et ne redescendra jamais. Il ne rend "
+                "pas la hausse plus probable — rien ici ne le fait — mais il retire la "
+                "décision de sortie au moment où elle se prend le plus mal, et il "
+                "impose l'asymétrie que mesure le palier 5.",
             )
         )
 

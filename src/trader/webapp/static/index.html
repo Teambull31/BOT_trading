@@ -113,6 +113,15 @@
             <input type="number" id="t-target" step="0.01" placeholder="ex. 1050.00">
           </label>
 
+          <label class="check">
+            <input type="checkbox" id="t-trailing-on">
+            <span>Stop suiveur — le stop remonte avec le cours, jamais l'inverse</span>
+          </label>
+          <label class="hidden" id="t-trailing-row">Distance du suiveur (%)
+            <input type="number" id="t-trailing" step="0.1" min="0.1" max="99"
+                   value="8" placeholder="ex. 8">
+          </label>
+
           <label>Pourquoi ce trade&nbsp;?
             <input type="text" id="t-rationale" placeholder="Votre raison, en une ligne">
           </label>

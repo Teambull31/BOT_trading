@@ -59,10 +59,43 @@ class Position:
     target: float | None = None
     rationale: str = ""
     highest_price: float = 0.0
+    trailing_pct: float | None = None
+    """Distance, en % sous le plus haut atteint, a laquelle le stop suit le cours.
+
+    Le debrief recommande le stop suiveur des que les pertes moyennes depassent
+    les gains moyens ; sans ce champ, l'application conseillait un outil qu'elle
+    ne fournissait pas.
+
+    Ce qu'un stop suiveur fait, et ne fait pas : il n'annonce rien sur la suite
+    du cours et n'ameliore aucune esperance de gain — les mesures de ce depot ne
+    montrent aucun pouvoir predictif. Il impose une asymetrie, en transformant
+    une plus-value latente en plancher, et il retire la decision de sortie au
+    moment ou elle se prend le plus mal : quand le cours vient de baisser.
+    """
+    trail_high: float = 0.0
+    """Plus haut atteint DEPUIS l'armement du suiveur — son point d'ancrage.
+
+    Volontairement distinct de `highest_price`, qui couvre toute la vie de la
+    position. Ancrer un suiveur arme aujourd'hui sur un sommet d'il y a trois
+    semaines placerait le stop au-dessus du cours et sortirait la position sur
+    le champ, a un niveau que personne n'a choisi. Un suiveur commence a
+    compter la ou on l'arme.
+    """
 
     def __post_init__(self) -> None:
         if self.highest_price <= 0:
             self.highest_price = self.entry_price
+        if self.trail_high <= 0:
+            # Position relue d'un fichier ecrit avant l'arrivee du suiveur :
+            # sans ancrage, `trailing_stop()` renverrait 0 et le suiveur serait
+            # silencieusement inoperant.
+            self.trail_high = self.highest_price
+
+    def trailing_stop(self) -> float | None:
+        """Niveau que le stop suiveur impose, ou None s'il est desactive."""
+        if not self.trailing_pct:
+            return None
+        return self.trail_high * (1.0 - self.trailing_pct / 100.0)
 
     @property
     def cost_basis(self) -> float:
@@ -108,6 +141,8 @@ class ClosedTrade:
     target: float | None = None
     rationale: str = ""
     highest_price: float = 0.0
+    trailing_pct: float | None = None
+    """Distance du stop suiveur si le trade en utilisait un, sinon None."""
     stop_moved_against: bool = False
     """Le stop a-t-il été élargi pendant la vie du trade ?
 
@@ -245,12 +280,19 @@ class PaperAccount:
         *,
         target: float | None = None,
         rationale: str = "",
+        trailing_pct: float | None = None,
     ) -> Position:
         """Ouvre une position longue.
 
         Le stop est OBLIGATOIRE et doit être sous le prix d'entrée : une
         position sans niveau de sortie défini à l'avance n'est pas un trade,
-        c'est un pari dont on déciderà la fin sous le coup de l'émotion.
+        c'est un pari dont on décidera la fin sous le coup de l'émotion.
+
+        Si un stop suiveur est demandé et qu'il impose, dès l'entrée, un niveau
+        plus haut que le stop saisi, c'est LUI qui s'applique. Le stop réellement
+        en vigueur est celui que porte la position renvoyée : laisser croire à
+        une marge de 5 % alors qu'un suiveur à 2 % gouverne serait afficher un
+        risque que le compte ne court pas.
         """
         symbol = symbol.upper().strip()
         if shares <= 0:
@@ -259,6 +301,8 @@ class PaperAccount:
             raise ValueError("prix invalide")
         if stop <= 0 or stop >= price:
             raise ValueError("le stop doit être strictement sous le prix d'entrée")
+        if trailing_pct is not None and not 0.0 < trailing_pct < 100.0:
+            raise ValueError("le stop suiveur doit être une distance entre 0 et 100 %")
         if any(position.symbol == symbol for position in self.state.positions):
             raise ValueError(f"une position est déjà ouverte sur {symbol}")
 
@@ -281,7 +325,12 @@ class PaperAccount:
             target=float(target) if target else None,
             rationale=rationale,
             highest_price=fill,
+            trailing_pct=float(trailing_pct) if trailing_pct else None,
+            trail_high=fill,
         )
+        level = position.trailing_stop()
+        if level is not None and level > position.stop:
+            position.stop = level
         self.state.cash -= notional + costs
         self.state.positions.append(position)
         self.save()
@@ -304,16 +353,66 @@ class PaperAccount:
         self.save()
         return position
 
-    def mark(self, prices: dict[str, float]) -> None:
-        """Met à jour le plus haut atteint par chaque position.
+    def set_trailing(
+        self,
+        position_id: str,
+        trailing_pct: float | None,
+        price: float | None = None,
+    ) -> Position:
+        """Active, ajuste ou retire le stop suiveur d'une position ouverte.
 
-        Sert au debrief : sans lui, impossible de dire a l'utilisateur qu'il
-        avait +18 % latents avant de sortir a +3 %.
+        Le retirer est permis : interdire un retour en arrière empêcherait
+        d'apprendre par l'erreur. Mais le stop déjà remonté par le suiveur, lui,
+        RESTE en place — le suiveur ne rend jamais le terrain qu'il a pris.
+
+        `price` est le cours du moment. Il sert de point d'ancrage quand on
+        ARME le suiveur : un suiveur commence à compter là où on le pose, pas
+        au sommet que la position a touché la semaine dernière. Ancrer sur ce
+        sommet-là placerait le stop au-dessus du cours et solderait la position
+        immédiatement — une sortie que l'utilisateur n'a jamais demandée.
+        Resserrer un suiveur déjà actif, en revanche, ne redéplace pas
+        l'ancrage : le terrain déjà pris est acquis.
+        """
+        position = self.find_position(position_id)
+        if trailing_pct is not None and not 0.0 < trailing_pct < 100.0:
+            raise ValueError("le stop suiveur doit être une distance entre 0 et 100 %")
+        arming = trailing_pct and not position.trailing_pct
+        position.trailing_pct = float(trailing_pct) if trailing_pct else None
+        if arming:
+            position.trail_high = float(price) if price else position.entry_price
+        level = position.trailing_stop()
+        if level is not None and level > position.stop:
+            position.stop = level
+        self.save()
+        log.info("trailing_set", symbol=position.symbol, pct=trailing_pct, stop=position.stop)
+        return position
+
+    def mark(self, prices: dict[str, float]) -> None:
+        """Met à jour le plus haut atteint, puis fait suivre les stops suiveurs.
+
+        Le plus haut sert au debrief : sans lui, impossible de dire à
+        l'utilisateur qu'il avait +18 % latents avant de sortir à +3 %.
+
+        Un stop suiveur ne descend JAMAIS. C'est ce qui le distingue d'un stop
+        que l'on déplace à la main : il ne peut pas devenir le prétexte à ne pas
+        matérialiser une perte, puisque le seul mouvement qu'il autorise est
+        celui qui réduit le risque.
         """
         for position in self.state.positions:
             price = prices.get(position.symbol)
             if price and price > position.highest_price:
                 position.highest_price = float(price)
+            if price and price > position.trail_high:
+                position.trail_high = float(price)
+            level = position.trailing_stop()
+            if level is not None and level > position.stop:
+                log.info(
+                    "trailing_stop_raised",
+                    symbol=position.symbol,
+                    old=round(position.stop, 4),
+                    new=round(level, 4),
+                )
+                position.stop = level
         self.save()
 
     def check_stops(self, prices: dict[str, float]) -> list[ClosedTrade]:
@@ -385,6 +484,7 @@ class PaperAccount:
             target=position.target,
             rationale=position.rationale,
             highest_price=max(position.highest_price, fill),
+            trailing_pct=position.trailing_pct,
             stop_moved_against="[stop élargi]" in position.rationale,
         )
         self.state.cash += proceeds - costs

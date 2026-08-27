@@ -162,7 +162,22 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
     if peak > trade.exit_price and trade.shares > 0:
         missed = (peak - trade.exit_price) * trade.shares
         peak_gain_pct = (peak / trade.entry_price - 1.0) * 100.0
-        if missed > abs(trade.pnl) * 0.25 and peak_gain_pct > 1.0:
+        if trade.trailing_pct and peak_gain_pct > 1.0:
+            kept_pct = (trade.exit_price / trade.entry_price - 1.0) * 100.0
+            lessons.append(
+                Lesson(
+                    "chiffre",
+                    f"Le suiveur à {trade.trailing_pct:.1f} % a rendu {peak_gain_pct:+.1f} %"
+                    f" en {kept_pct:+.1f} %",
+                    f"Le titre est monté à {peak:,.2f}, la sortie s'est faite à "
+                    f"{trade.exit_price:,.2f}. Un suiveur laisse TOUJOURS une part du "
+                    "plus haut sur la table : c'est son prix, pas son défaut. Ce qu'il "
+                    "achète en échange, c'est de ne jamais rendre la totalité du "
+                    "mouvement. Un suiveur plus serré aurait gardé davantage ici, et "
+                    "vous aurait sorti plus tôt sur les mouvements qui respirent.",
+                )
+            )
+        elif missed > abs(trade.pnl) * 0.25 and peak_gain_pct > 1.0:
             lessons.append(
                 Lesson(
                     "chiffre",

@@ -99,6 +99,7 @@ function renderPositions(positions) {
           <div><div class="pg-label">Cours</div><div class="pg-value">${euro(p.price)}</div></div>
           <div><div class="pg-label">Stop</div><div class="pg-value">${euro(p.stop)}</div></div>
           <div><div class="pg-label">Objectif</div><div class="pg-value">${p.target ? euro(p.target) : '—'}</div></div>
+          <div><div class="pg-label">Suiveur</div><div class="pg-value">${p.trailing_pct ? p.trailing_pct.toFixed(1) + ' %' : '—'}</div></div>
           <div><div class="pg-label">Valeur</div><div class="pg-value">${euro(p.value)} €</div></div>
         </div>
         ${p.rationale ? `<div class="muted small" style="margin-bottom:12px">« ${p.rationale} »</div>` : ''}
@@ -106,6 +107,12 @@ function renderPositions(positions) {
           <input type="number" step="0.01" placeholder="nouveau stop" id="stop-${p.id}">
           <button class="ghost" onclick="moveStop('${p.id}')">Déplacer le stop</button>
           <button class="primary" onclick="closePosition('${p.id}')">Clôturer</button>
+        </div>
+        <div class="pos-actions trailing-row">
+          <input type="number" step="0.1" min="0.1" max="99" placeholder="suiveur %"
+                 id="trail-${p.id}" value="${p.trailing_pct || ''}">
+          <button class="ghost" onclick="setTrailing('${p.id}')">${p.trailing_pct ? 'Ajuster le suiveur' : 'Activer le suiveur'}</button>
+          ${p.trailing_pct ? `<button class="ghost" onclick="setTrailing('${p.id}', true)">Retirer</button>` : ''}
         </div>
       </div>`;
     })
@@ -221,6 +228,29 @@ window.moveStop = async (id) => {
   }
 };
 
+window.setTrailing = async (id, remove = false) => {
+  // Le suiveur ne descend jamais : le retirer laisse en place le stop qu'il a
+  // deja fait monter. On le dit, sinon l'utilisateur croit revenir en arriere.
+  const value = remove ? null : parseFloat($(`trail-${id}`).value);
+  if (!remove && !(value > 0)) return;
+  try {
+    const result = await api('/api/trailing', {
+      method: 'POST',
+      body: JSON.stringify({ position_id: id, trailing_pct: value }),
+    });
+    if (remove) {
+      alert(
+        `Suiveur retiré. Le stop reste à ${result.stop.toFixed(2)} : un stop suiveur ne rend ` +
+          'jamais le terrain gagné. Pour élargir la marge, il faut déplacer le stop, et cela ' +
+          'sera enregistré comme un élargissement.'
+      );
+    }
+    await refresh();
+  } catch (error) {
+    alert(error.message);
+  }
+};
+
 window.closePosition = async (id) => {
   try {
     const { debrief } = await api('/api/close', { method: 'POST', body: JSON.stringify({ position_id: id }) });
@@ -324,6 +354,9 @@ async function reviewTrade() {
     shares: parseFloat($('t-shares').value),
     stop: parseFloat($('t-stop').value),
     target: parseFloat($('t-target').value) || null,
+    // Le suiveur ne part que si la case est cochee : un champ pre-rempli mais
+    // decoche ne doit pas armer un stop que l'utilisateur n'a pas demande.
+    trailing_pct: $('t-trailing-on').checked ? parseFloat($('t-trailing').value) || null : null,
   };
   if (!plan.symbol || !plan.shares || !plan.stop) {
     $('trade-error').textContent = 'Titre, quantité et stop sont nécessaires.';
@@ -363,9 +396,20 @@ async function reviewTrade() {
 async function confirmTrade() {
   if (!pendingPlan) return;
   try {
-    await api('/api/open', { method: 'POST', body: JSON.stringify(pendingPlan) });
+    const opened = await api('/api/open', { method: 'POST', body: JSON.stringify(pendingPlan) });
+    // Le stop reellement en vigueur peut differer de celui saisi : le suiveur
+    // le resserre des l'entree s'il est plus proche. Le taire laisserait
+    // l'utilisateur croire qu'il risque plus qu'il ne risque vraiment.
+    if (opened.trailing_pct && opened.stop > pendingPlan.stop) {
+      alert(
+        `Le suiveur à ${opened.trailing_pct} % place le stop à ${euro(opened.stop)} €, `
+          + `au-dessus du ${euro(pendingPlan.stop)} € que vous aviez saisi. C'est ce niveau-là qui protège la position.`
+      );
+    }
     $('review-card').classList.add('hidden');
     ['t-symbol', 't-stop', 't-shares', 't-target', 't-rationale'].forEach((id) => ($(id).value = ''));
+    $('t-trailing-on').checked = false;
+    $('t-trailing-row').classList.add('hidden');
     $('price-hint').textContent = '';
     pendingPlan = null;
     await refresh();
@@ -433,6 +477,10 @@ document.querySelectorAll('.chip[data-risk]').forEach((chip) =>
     chip.classList.add('active');
     riskPct = parseFloat(chip.dataset.risk);
   })
+);
+
+$('t-trailing-on').addEventListener('change', (event) =>
+  $('t-trailing-row').classList.toggle('hidden', !event.target.checked)
 );
 
 $('calc-size').addEventListener('click', calcSize);
