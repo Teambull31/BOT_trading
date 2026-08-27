@@ -306,6 +306,31 @@ telle quelle a la fenetre evaluee, qui n'a servi a aucun choix de parametre.
 indicateurs (recalcul sur prefixe), execution a l'ouverture de la seance
 suivante, frais et slippage sur chaque ordre.
 
+### Probabilite de reussite et effet de levier (`signal_probability.py`)
+
+```bash
+python scripts/signal_probability.py --horizon 10 --leverages 1,2,5,10,20,30
+```
+
+Repond a deux questions distinctes, mesurees sur 2019-2025, hors fenetre 2026.
+
+**Un faisceau de signaux concordants annonce-t-il une hausse ?** Sept signaux
+independants (tendance, momentum, MACD, RSI, canal, volume, volatilite) donnent
+un score de -7 a +7. Le module produit deux tables : une DESCRIPTIVE (calculee
+sur tout l'historique, a ne jamais utiliser pour decider) et une CAUSALE, ou
+l'estimation en `t` n'utilise que les signaux dont le resultat etait deja connu
+en `t`. L'ecart entre les deux mesure ce que l'on croirait gagner en trichant.
+
+Le point de comparaison est le TAUX DE BASE, pas 50 % : une fenetre de dix
+seances monte deja 56.9 % du temps sans rien faire. Un signal a 58 % de
+reussite n'est pas "+8 points au-dessus du hasard", il est a +1 point du taux
+de base.
+
+**Que donne ce signal a levier ?** Le simulateur modelise ce qui decide du
+resultat a fort levier : liquidation sur marge de maintenance, gap d'ouverture
+(fonds propres pouvant devenir NEGATIFS — une dette, pas un compte a zero),
+cout de portage sur la part empruntee, et frictions calculees sur le NOTIONNEL.
+
 ### Pistes mesurees puis ecartees
 
 Consignees ici pour ne pas etre re-testees indefiniment. Une piste rejetee est
@@ -314,6 +339,9 @@ un resultat, pas un echec.
 | Piste | Mesure in-sample | Verdict |
 | --- | --- | --- |
 | Delai de carence apres stop (`reentry_cooldown_days`) | 7 valeurs x 5 univers sur 2023-10 → 2025-12 | **Rejetee.** Courbe non monotone (0 bon, 3 a 20 moins bons, 30 meilleur) : signature du bruit. Le delai de 30 jours ne gagne que 2 semestres sur 5, tout son avantage venant d'un seul marche sans direction. Le parametre reste disponible, desactive par defaut. |
+| Score de signaux concordants comme predicteur | 8 titres, 2019-2025, 12 000 observations | **Rejetee.** Score +7 (les sept signaux haussiers) : 57.8 % de hausse contre 56.9 % de taux de base, soit +0.9 point. Les scores +3 et +5 font MOINS BIEN que le taux de base. Aucun ecart ne tient d'une annee sur l'autre. |
+| Effet contrarien du score -7 | idem | **Rejetee.** Paraissait valoir +11.7 points sur 2022-2025 ; tombe a +0.7 en ajoutant 2019-2021. En 2022, seule annee reellement baissiere de l'echantillon, l'ecart est NEGATIF (-3.0). Un edge qui disparait quand le marche baisse est de l'exposition au marche, pas un signal. |
+| Levier 10x et au-dela | 8 titres, signal causal, liquidation et gaps modelises | **Rejetee.** Le rendement median culmine vers 2x puis s'effondre. A 30x, 7 titres sur 8 sont liquides et le pire cas laisse une dette de 122 % du capital. Le portage seul coute environ 145 % des fonds propres par an. |
 
 **Limites.** Cours non ajustes des dividendes ; risque de change EUR/USD non
 modelise ; fractions d'actions supposees disponibles (indispensable avec 1000 €
