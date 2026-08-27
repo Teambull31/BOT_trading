@@ -268,10 +268,33 @@ soumis aux memes exigences : aucune lecture du futur, frais systematiques,
 comparaison au buy & hold.
 
 ```bash
-python scripts/equity_sim.py --walk-forward        # simulation + validation
-python scripts/equity_sim.py --start 2026-01-01 --end 2026-08-25 --capital 1000
-python scripts/equity_sim.py --extra NVDA,XOM      # imposer d'autres titres
+python scripts/equity_sim.py --walk-forward         # simulation + validation
+python scripts/equity_sim.py --profile offensif     # curseur de risque
+python scripts/equity_sim.py --compare-profiles     # tous les profils, memes dates
+python scripts/equity_sim.py --stress-universe      # fragilite au choix des titres
+python scripts/equity_sim.py --extra NVDA,XOM       # imposer d'autres titres
 ```
+
+### Profils de risque
+
+| profil | exposition max | intention |
+|---|---|---|
+| `budget_risque` | 1 % de perte max par trade | borner la perte unitaire, quitte a rester en cash |
+| `defensif` | 60 % (3 x 20 %) | traverser les mauvaises annees sans degats |
+| `equilibre` | 99 % (3 x 33 %) | capter les tendances en repartissant le risque |
+| `offensif` | 100 % (2 x 50 %) | concentrer sur les deux meilleures tendances |
+| `maximal` | 100 % (1 x 100 %) | un seul titre a la fois, aucune diversification |
+
+Aucun profil n'utilise de levier. `--stress-universe` mesure la part du resultat
+qui tient au choix des titres plutot qu'a la strategie : c'est ce qui distingue
+un profil exploitable d'un pari deguise.
+
+### Diagnostic de marche
+
+Affiche a chaque execution : part des titres en tendance, recul depuis les plus
+hauts, regime de volatilite, correlation moyenne, et position du marche large
+(SPY) — pour distinguer un probleme sectoriel d'une correction generale. Le
+score de prudence et le profil coherent avec l'etat constate sont explicites.
 
 **Methode.** L'univers est selectionne sur des donnees strictement anterieures a
 la fenetre evaluee, avec un score qui combine decorrelation et tendancialite —

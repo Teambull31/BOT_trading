@@ -44,6 +44,10 @@ def _parse_money(value: str) -> float:
     return float(cleaned)
 
 
+ETF_SYMBOLS: frozenset[str] = frozenset({"SPY", "QQQ", "GLD", "IWM", "TLT", "VTI", "EFA"})
+"""Symboles servis par l'API sous la classe d'actif 'etf' et non 'stocks'."""
+
+
 def fetch_history(
     symbol: str,
     start: date,
@@ -51,6 +55,7 @@ def fetch_history(
     cache_dir: Path = CACHE_DIR,
     refresh: bool = False,
     retries: int = 3,
+    asset_class: str | None = None,
 ) -> pd.DataFrame:
     """Recupere l'historique quotidien d'un titre, avec cache disque.
 
@@ -71,7 +76,8 @@ def fetch_history(
         if not cached.empty and cached.index[0].date() <= start and cached.index[-1].date() >= end:
             return cached.loc[str(start) : str(end)]
 
-    raw = _download(symbol, start, end, retries)
+    resolved_class = asset_class or ("etf" if symbol.upper() in ETF_SYMBOLS else "stocks")
+    raw = _download(symbol, start, end, retries, resolved_class)
     frame = _to_frame(raw)
     if frame.empty:
         raise MarketDataError(f"{symbol}: aucune donnee retournee pour {start} -> {end}")
@@ -98,11 +104,13 @@ def _read_cache(path: Path) -> pd.DataFrame:
     return frame.sort_index()
 
 
-def _download(symbol: str, start: date, end: date, retries: int) -> list[dict]:
+def _download(
+    symbol: str, start: date, end: date, retries: int, asset_class: str = "stocks"
+) -> list[dict]:
     """Appelle l'API historique, avec backoff exponentiel sur erreur reseau."""
     url = (
         f"https://api.nasdaq.com/api/quote/{symbol.upper()}/historical"
-        f"?assetclass=stocks&fromdate={start}&todate={end}&limit=9999"
+        f"?assetclass={asset_class}&fromdate={start}&todate={end}&limit=9999"
     )
     request = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}

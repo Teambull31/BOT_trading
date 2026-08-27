@@ -347,3 +347,138 @@ def test_selection_window_excludes_evaluation_period():
     evaluation_start = date(2026, 6, 1)
     selection_end = evaluation_start - timedelta(days=1)
     assert selection_end < evaluation_start
+
+
+# --------------------------------------------------------------- profils
+
+
+def test_profiles_form_a_coherent_risk_gradient():
+    """Le curseur doit etre ordonne : l'exposition croit du prudent a l'agressif."""
+    from trader.equities.profiles import ORDER, PROFILES
+
+    exposures = [PROFILES[key].max_exposure_pct for key in ORDER if key != "budget_risque"]
+    assert exposures == sorted(exposures)
+    stops = [PROFILES[key].strategy.trailing_atr for key in ORDER if key != "budget_risque"]
+    assert stops == sorted(stops)
+
+
+def test_no_profile_uses_leverage():
+    """Aucun profil ne doit engager plus que le capital disponible."""
+    from trader.equities.profiles import PROFILES
+
+    for profile in PROFILES.values():
+        assert profile.max_exposure_pct <= 100.0
+
+
+def test_profile_lookup_is_case_insensitive_and_validated():
+    from trader.equities.profiles import get_profile
+
+    assert get_profile("  EQUILIBRE ").key == "equilibre"
+    with pytest.raises(ValueError, match="profil inconnu"):
+        get_profile("turbo")
+
+
+def test_profiles_describe_expected_behaviour():
+    """Chaque profil doit annoncer ce a quoi s'attendre, pas seulement ses reglages."""
+    from trader.equities.profiles import PROFILES
+
+    for profile in PROFILES.values():
+        assert profile.intent and profile.expected_behaviour
+        assert "%" in profile.describe()
+
+
+def test_higher_exposure_produces_larger_drawdown(universe):
+    """Propriete fondamentale : plus d'exposition, plus de drawdown."""
+    from trader.equities.profiles import PROFILES
+
+    start, end = window_of(universe, last_days=400)
+    drawdowns = {}
+    for key in ("defensif", "equilibre", "offensif"):
+        profile = PROFILES[key]
+        report = EquityBacktester(params=profile.strategy, risk=profile.risk).run(
+            universe, start, end, 1000.0
+        )
+        drawdowns[key] = report.metrics["max_drawdown_pct"]
+    assert drawdowns["defensif"] <= drawdowns["equilibre"] + 1e-6
+    assert drawdowns["equilibre"] <= drawdowns["offensif"] + 1e-6
+
+
+# ------------------------------------------------------------- diagnostic
+
+
+def test_diagnostic_detects_healthy_market():
+    from trader.equities.diagnostic import diagnose
+
+    frames = {
+        "AAA": make_series(n=600, drift=0.0015, vol=0.010, seed=31),
+        "BBB": make_series(n=600, drift=0.0012, vol=0.011, seed=32),
+        "CCC": make_series(n=600, drift=0.0013, vol=0.009, seed=33),
+    }
+    result = diagnose(frames)
+    assert result.breadth_pct > 50.0
+    assert "PORTEUR" in result.verdict or "MITIGE" in result.verdict
+    assert 0 <= result.caution_score <= result.max_caution
+
+
+def test_diagnostic_detects_bear_market():
+    """Univers entierement sous sa moyenne longue : le verdict doit etre prudent."""
+    from trader.equities.diagnostic import diagnose
+
+    frames = {
+        "AAA": make_series(n=600, drift=-0.002, vol=0.02, seed=41),
+        "BBB": make_series(n=600, drift=-0.0025, vol=0.022, seed=42),
+    }
+    result = diagnose(frames)
+    assert result.breadth_pct < 50.0
+    assert result.recommended_profile == "defensif"
+    assert "DIFFICILE" in result.verdict
+    assert result.warnings
+
+
+def test_diagnostic_flags_volatility_spike():
+    from trader.equities.diagnostic import diagnose
+
+    calm = make_series(n=600, drift=0.001, vol=0.008, seed=51)
+    # On triple la volatilite sur les 20 dernieres seances.
+    shocked = calm.copy()
+    rng = np.random.default_rng(7)
+    shocks = rng.normal(0.0, 0.05, 20)
+    shocked.iloc[-20:, shocked.columns.get_loc("close")] *= np.exp(np.cumsum(shocks))
+    result = diagnose({"AAA": shocked, "BBB": calm})
+    assert result.mean_vol_ratio > 1.0
+
+
+def test_diagnostic_uses_broad_market_reference():
+    """Un univers en difficulte pendant que le marche va bien n'est pas la meme
+    chose qu'une correction generale."""
+    from trader.equities.diagnostic import diagnose
+
+    universe = {"AAA": make_series(n=600, drift=-0.002, vol=0.02, seed=61)}
+    falling_market = make_series(n=600, drift=-0.0025, vol=0.02, seed=62)
+    with_benchmark = diagnose(universe, benchmark_frame=falling_market)
+    without = diagnose(universe)
+    assert with_benchmark.benchmark is not None
+    assert with_benchmark.caution_score > without.caution_score
+
+
+def test_diagnostic_reports_are_renderable():
+    from trader.equities.diagnostic import diagnose
+
+    result = diagnose({"AAA": make_series(n=600, seed=71), "BBB": make_series(n=600, seed=72)})
+    rendered = result.render()
+    assert "VERDICT" in rendered
+    assert "Score de prudence" in rendered
+
+
+def test_diagnostic_requires_enough_history():
+    from trader.equities.diagnostic import diagnose
+
+    with pytest.raises(ValueError, match="historique insuffisant"):
+        diagnose({"AAA": make_series(n=50, seed=81)})
+
+
+def test_diagnostic_rejects_empty_input():
+    from trader.equities.diagnostic import diagnose
+
+    with pytest.raises(ValueError, match="aucune donnee"):
+        diagnose({})
