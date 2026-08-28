@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from enum import Enum
 
 from trader.coach.account import AccountState, PaperAccount
-from trader.coach.curriculum import MAX_RISK_PCT, MIN_PLANNED_R, break_even_rate
+from trader.coach.curriculum import (
+    MAX_OPEN_RISK_PCT,
+    MAX_RISK_PCT,
+    MIN_PLANNED_R,
+    break_even_rate,
+)
 from trader.coach.quotes import Quote
 
 MAX_CONCENTRATION_PCT: float = 60.0
@@ -274,6 +279,61 @@ def review_plan(
                 "C'est un montant que le compte encaisse sans dommage.",
             )
         )
+
+    # Le risque par trade ne dit rien du risque du COMPTE. Chaque position prise
+    # isolement peut etre irreprochable pendant que leur somme joue une part du
+    # capital que le parcours n'autorise pas a perdre — et une seance de baisse
+    # generale fait tomber les stops ensemble, pas un par un.
+    deja_engage = account.open_risk()
+    if state.positions and plan.risk_amount > 0:
+        # Le total est un plancher : la part du trade projete ne compte pas
+        # encore ses frais, ceux des positions ouvertes le sont deja.
+        cumule = deja_engage + plan.risk_amount
+        cumule_pct = cumule / equity * 100.0 if equity > 0 else 0.0
+        detail = (
+            f"{len(state.positions)} position(s) déjà ouverte(s) risquent "
+            f"{deja_engage:,.2f} EUR ; celle-ci en ajoute {plan.risk_amount:,.2f}."
+        )
+        if cumule_pct > MAX_OPEN_RISK_PCT * 2:
+            advices.append(
+                Advice(
+                    Severity.BLOCKER,
+                    f"Risque cumulé de {cumule_pct:.1f} % du compte",
+                    f"{detail} Une seule séance de baisse générale les fait tomber "
+                    f"ensemble : le compte perdrait {cumule:,.2f} EUR d'un coup. Soldez "
+                    "ou resserrez une position existante avant d'en ouvrir une de plus.",
+                )
+            )
+        elif cumule_pct > MAX_OPEN_RISK_PCT:
+            advices.append(
+                Advice(
+                    Severity.WARNING,
+                    f"Risque cumulé de {cumule_pct:.1f} % du compte",
+                    f"{detail} Chaque trade respecte peut-être sa limite, leur somme "
+                    f"dépasse les {MAX_OPEN_RISK_PCT:.0f} % du parcours. Les stops ne "
+                    "tombent pas indépendamment : ce qui fait baisser un titre du "
+                    "secteur fait baisser les autres le même jour.",
+                )
+            )
+        elif cumule > 0:
+            advices.append(
+                Advice(
+                    Severity.GOOD,
+                    f"Risque cumulé maîtrisé : {cumule_pct:.2f} % du compte",
+                    f"{detail} Tous stops touchés le même jour, le compte perdrait "
+                    f"{cumule:,.2f} EUR — sous la limite de {MAX_OPEN_RISK_PCT:.0f} %.",
+                )
+            )
+        else:
+            advices.append(
+                Advice(
+                    Severity.GOOD,
+                    "Les positions ouvertes ne peuvent plus rien coûter",
+                    f"Leurs stops sont passés au-dessus de leur prix de revient : tous "
+                    f"touchés, elles rapporteraient encore {-deja_engage:,.2f} EUR. Seul "
+                    f"ce trade-ci met du capital en jeu ({plan.risk_amount:,.2f} EUR).",
+                )
+            )
 
     # Le risque "au stop" sous-estime le danger reel : un trou de cotation saute
     # le stop et frappe la position ENTIERE. Sur l'univers suivi, des séances a

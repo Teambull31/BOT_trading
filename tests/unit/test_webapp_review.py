@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trader.coach.account import PaperAccount
-from trader.coach.curriculum import MIN_PLANNED_R
+from trader.coach.curriculum import MAX_OPEN_RISK_PCT, MIN_PLANNED_R
 from trader.coach.quotes import Quote
 from trader.webapp import server as webapp
 
@@ -172,3 +172,38 @@ def test_a_widened_stop_is_still_flagged_as_such(client):
         "price": pytest.approx(100.0),
         "triggers_now": False,
     }
+
+
+def test_state_publishes_what_the_whole_account_risks(client):
+    """Le total engage, pas seulement le risque de chaque ligne.
+
+    L'exposition dit ce qui est investi ; elle ne dit pas ce qui serait perdu.
+    Sans ce chiffre, trois positions saines cachaient un compte qui joue plus
+    que ce que le parcours autorise a perdre.
+    """
+    _ouvre(client, symbol="AAA")
+    _ouvre(client, symbol="BBB")
+    perf = client.get("/api/state").json()["performance"]
+
+    assert perf["open_positions"] == 2
+    assert perf["open_risk"] > 0
+    assert perf["open_risk_pct"] == pytest.approx(
+        perf["open_risk"] / perf["equity"] * 100.0, abs=0.05
+    )
+    # La limite voyage avec la mesure : l'interface n'a pas a la redefinir.
+    assert perf["open_risk_limit_pct"] == MAX_OPEN_RISK_PCT
+
+
+def test_state_reports_a_portfolio_that_can_no_longer_cost_anything(client, monkeypatch):
+    """Tous les stops au-dessus du prix de revient : le total passe en negatif.
+
+    Le cours monte d'abord : un stop pose au-dessus du cours serait un stop
+    touche, et la position serait soldee au lieu de verrouiller quoi que ce soit.
+    """
+    position = _ouvre(client, symbol="AAA")
+    _fige_le_cours(monkeypatch, 130.0)
+    client.post("/api/stop", json={"position_id": position["id"], "stop": 120.0})
+
+    perf = client.get("/api/state").json()["performance"]
+    assert perf["open_positions"] == 1
+    assert perf["open_risk"] < 0

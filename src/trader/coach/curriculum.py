@@ -28,6 +28,16 @@ MAX_RISK_PCT: float = 2.0
 """Perte au stop toleree, en % du capital. Au-delà, une série de pertes
 normale suffit a effacer le compte."""
 
+MAX_OPEN_RISK_PCT: float = 6.0
+"""Perte cumulee toleree, en % du capital, si TOUS les stops tombaient.
+
+`MAX_RISK_PCT` borne un trade ; il ne borne pas le compte. Cinq positions a
+2 % chacune sont cinq trades irreprochables et un compte qui joue 10 % sur une
+seule seance de baisse generale — cas ou les stops tombent ensemble, et non
+independamment. Trois trades pleins (3 x 2 %) est la limite au-dela de laquelle
+une seule mauvaise seance coute plus que ce que le parcours autorise a perdre.
+"""
+
 OVERTRADE_PER_WEEK: int = 5
 """Nombre de trades par semaine au-delà duquel on parle de surtrading."""
 

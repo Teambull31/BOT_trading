@@ -567,6 +567,26 @@ class PaperAccount:
         held = total - self.state.cash
         return held / total * 100.0
 
+    def open_risk(self) -> float:
+        """Ce que le compte perdrait si TOUS les stops ouverts tombaient maintenant.
+
+        Somme des risques de chaque position, frais des deux ordres compris. Le
+        risque par trade est borne par le parcours ; ce total-la ne l'etait par
+        rien, et c'est pourtant lui que subit une seance de baisse generale, ou
+        les stops ne tombent pas independamment les uns des autres.
+
+        Une position dont le stop verrouille un gain compte en negatif : par
+        hypothese tous les stops tombent EN MEME TEMPS, et ce gain-la serait bien
+        encaisse ce jour-la. Le total peut donc etre negatif, ce qui est la
+        situation recherchee : un portefeuille qui ne peut plus rien couter.
+        """
+        return sum(position.risk_at_stop() for position in self.state.positions)
+
+    def open_risk_pct(self, prices: dict[str, float]) -> float:
+        """`open_risk` rapporte au capital, en %. Zero sans capital."""
+        total = self.equity(prices)
+        return self.open_risk() / total * 100.0 if total > 0 else 0.0
+
     def performance(self, prices: dict[str, float]) -> dict[str, float]:
         """Indicateurs de suivi, rapportes au capital REELLEMENT injecte."""
         deposited = self.state.total_deposited
@@ -582,6 +602,8 @@ class PaperAccount:
             "pnl_pct": (equity / deposited - 1.0) * 100.0 if deposited > 0 else 0.0,
             "cash": self.state.cash,
             "exposure_pct": self.exposure_pct(prices),
+            "open_risk": self.open_risk(),
+            "open_risk_pct": self.open_risk_pct(prices),
             "closed_trades": len(self.state.history),
             "open_positions": len(self.state.positions),
             "hit_rate": len(wins) / len(self.state.history) if self.state.history else 0.0,

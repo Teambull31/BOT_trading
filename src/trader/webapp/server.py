@@ -35,7 +35,12 @@ from trader.coach.advisor import (
     suggest_size,
     suggest_target,
 )
-from trader.coach.curriculum import MIN_PLANNED_R, evaluate_progress, planned_ratio
+from trader.coach.curriculum import (
+    MAX_OPEN_RISK_PCT,
+    MIN_PLANNED_R,
+    evaluate_progress,
+    planned_ratio,
+)
 from trader.coach.debrief import debrief_trade, recurring_patterns
 from trader.coach.quotes import QuoteError, fetch_quote, fetch_quotes
 from trader.logging_setup import get_logger
@@ -244,11 +249,15 @@ def create_app(
                     "live": position.symbol in prices,
                 }
             )
+        performance = {
+            key: round(value, 2) if isinstance(value, float) else value
+            for key, value in account.performance(prices).items()
+        }
+        # La limite voyage avec la mesure : l'interface signale le depassement
+        # sans avoir a redefinir de son cote un seuil qui vit dans le parcours.
+        performance["open_risk_limit_pct"] = MAX_OPEN_RISK_PCT
         return {
-            "performance": {
-                key: round(value, 2) if isinstance(value, float) else value
-                for key, value in account.performance(prices).items()
-            },
+            "performance": performance,
             "positions": positions,
             "progress": progress.to_dict(),
             "patterns": [lesson.to_dict() for lesson in recurring_patterns(account.state)],

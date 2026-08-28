@@ -101,6 +101,23 @@ function renderStats(p) {
       sub: `${p.open_positions} position(s) ouverte(s)`,
     },
   ];
+  // L'exposition dit combien est INVESTI, jamais combien est en JEU. Chaque
+  // position peut respecter sa limite pendant que leur somme joue une part du
+  // compte que le parcours n'autorise pas a perdre : c'est ce total-la qui se
+  // realise le jour ou les stops tombent ensemble, et il n'etait affiche nulle
+  // part. Negatif, les stops verrouillent un gain : le compte ne risque plus rien.
+  if (p.open_positions > 0) {
+    const over = p.open_risk_pct > p.open_risk_limit_pct;
+    const locked = p.open_risk <= 0;
+    rows.push({
+      label: locked ? 'Risque ouvert (gain verrouillé)' : 'Risque ouvert',
+      value: euro(Math.abs(p.open_risk)) + ' €',
+      sub: locked
+        ? 'tous stops touchés, le compte gagnerait encore'
+        : `${p.open_risk_pct.toFixed(1)} % du compte si tous les stops tombent (limite ${p.open_risk_limit_pct.toFixed(0)} %)`,
+      klass: locked ? 'pos' : over ? 'neg' : '',
+    });
+  }
   if (p.closed_trades >= 3) {
     rows.push({
       label: 'Réussite',

@@ -28,6 +28,7 @@ from trader.coach.advisor import (
 )
 from trader.coach.curriculum import (
     LEVELS,
+    MAX_OPEN_RISK_PCT,
     MIN_PLANNED_R,
     break_even_rate,
     evaluate_progress,
@@ -372,6 +373,85 @@ def test_suggest_target_is_absent_without_a_planned_loss():
     assert suggest_target(100.0, 105.0) is None
     assert suggest_target(100.0, 100.0) is None
     assert suggest_target(0.0, -1.0) is None
+
+
+def test_open_risk_is_what_the_account_loses_if_every_stop_falls(account):
+    """La somme annoncee doit etre celle qui serait reellement inscrite.
+
+    C'est le chiffre que le compte subit le jour d'une baisse generale, ou les
+    stops ne tombent pas les uns apres les autres mais ensemble.
+    """
+    account.open_position("AAA", shares=2.0, price=100.0, stop=95.0)
+    account.open_position("BBB", shares=1.0, price=100.0, stop=90.0)
+    annonce = account.open_risk()
+    assert annonce > 0
+
+    subi = sum(
+        account.close_position(position.id, position.stop, reason="stop_touche").pnl
+        for position in list(account.state.positions)
+    )
+    assert subi == pytest.approx(-annonce)
+
+
+def test_open_risk_goes_negative_once_every_stop_locks_a_gain(account):
+    """Portefeuille qui ne peut plus rien couter : le total passe sous zero."""
+    position = account.open_position("AAA", shares=2.0, price=100.0, stop=95.0)
+    account.update_stop(position.id, 110.0)
+    assert account.open_risk() < 0
+
+
+def test_open_risk_pct_is_zero_without_positions(account):
+    assert account.open_risk() == 0.0
+    assert account.open_risk_pct({}) == 0.0
+
+
+def test_review_warns_when_the_positions_together_risk_too_much(account):
+    """Chaque trade dans sa limite, leur somme au-dessus : c'est le compte qui joue.
+
+    Rien dans l'app ne mesurait ce cumul ; trois trades irreprochables
+    pouvaient engager une part du capital que le parcours interdit de perdre.
+    """
+    account.open_position("AAA", shares=2.0, price=100.0, stop=80.0)
+    account.open_position("BBB", shares=2.0, price=100.0, stop=80.0)
+    assert account.open_risk_pct({}) > MAX_OPEN_RISK_PCT
+
+    plan = TradePlan(symbol="CCC", shares=1.0, price=100.0, stop=95.0, target=110.0)
+    review = review_plan(plan, account, prices={})
+    cumul = [a for a in review.advices if "cumulé" in a.title]
+    assert len(cumul) == 1
+    # Le trade lui-meme reste petit : sans le cumul, il serait declare sain.
+    assert review.risk_pct < 1.0
+    assert cumul[0].severity is Severity.WARNING
+
+
+def test_review_blocks_a_cumulative_risk_twice_over_the_limit(account):
+    account.open_position("AAA", shares=2.0, price=100.0, stop=80.0)
+    account.open_position("BBB", shares=2.0, price=100.0, stop=80.0)
+
+    plan = TradePlan(symbol="CCC", shares=3.0, price=100.0, stop=70.0)
+    review = review_plan(plan, account, prices={})
+    assert not review.can_proceed
+    assert any("cumulé" in advice.title for advice in review.blockers)
+
+
+def test_review_says_nothing_about_a_cumulative_risk_on_a_first_trade(account):
+    """Sans position ouverte, il n'y a pas de cumul : le conseil serait du bruit."""
+    plan = TradePlan(symbol="AAA", shares=2.0, price=100.0, stop=95.0, target=115.0)
+    review = review_plan(plan, account, prices={})
+    assert not any("cumulé" in advice.title for advice in review.advices)
+
+
+def test_review_credits_positions_whose_stops_can_no_longer_cost_anything(account):
+    """Stops passes au-dessus du prix de revient : seul le nouveau trade engage du capital."""
+    position = account.open_position("AAA", shares=2.0, price=100.0, stop=95.0)
+    account.update_stop(position.id, 110.0)
+
+    plan = TradePlan(symbol="BBB", shares=2.0, price=100.0, stop=95.0, target=115.0)
+    review = review_plan(plan, account, prices={})
+    acquis = [a for a in review.advices if "plus rien coûter" in a.title]
+    assert len(acquis) == 1
+    assert acquis[0].severity is Severity.GOOD
+    assert review.can_proceed
 
 
 def test_review_blocks_an_oversized_position(account):
