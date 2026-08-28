@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from trader.coach.account import AccountState, PaperAccount
-from trader.coach.curriculum import MAX_RISK_PCT
+from trader.coach.curriculum import MAX_RISK_PCT, MIN_PLANNED_R
 from trader.coach.quotes import Quote
 
 MAX_CONCENTRATION_PCT: float = 60.0
@@ -134,9 +134,25 @@ class Review:
             "stop_distance_pct": round(self.plan.stop_distance_pct, 2),
             "effective_stop": round(self.plan.effective_stop, 4),
             "trailing_overrides_stop": self.plan.trailing_overrides_stop,
-            "reward_risk": round(self.plan.reward_risk, 2) if self.plan.reward_risk else None,
+            "reward_risk": (
+                None if self.plan.reward_risk is None else round(self.plan.reward_risk, 2)
+            ),
             "advices": [advice.to_dict() for advice in self.advices],
         }
+
+
+def _break_even_rate(ratio: float) -> float:
+    """Part de trades gagnants qu'il faut atteindre pour finir à l'équilibre.
+
+    Gagner `ratio` fois la mise `p` fois sur cent et la perdre le reste du temps
+    laisse `p * ratio - (1 - p)` : nul pour `p = 1 / (1 + ratio)`. Chiffre AVANT
+    frais — commissions et écart de cotation relèvent le seuil réel.
+
+    C'est le seul repère chiffré que cette app puisse donner honnêtement sur
+    l'issue d'un trade : il ne dépend d'aucune prévision, seulement de ce que
+    l'utilisateur place en face de son stop.
+    """
+    return 100.0 / (1.0 + ratio)
 
 
 def suggest_size(equity: float, price: float, stop: float, risk_pct: float = 1.0) -> float:
@@ -304,14 +320,26 @@ def review_plan(
         )
 
     ratio = plan.reward_risk
-    if ratio is None:
+    if ratio is None and plan.trailing_pct:
+        advices.append(
+            Advice(
+                Severity.GOOD,
+                f"Sortie confiée au stop suiveur ({plan.trailing_pct:g} %)",
+                "Pas d'objectif chiffré, mais le gain n'est pas plafonné : le suiveur "
+                "remonte avec le cours et ne redescend jamais. Il n'annonce rien sur la "
+                "suite du cours et n'améliore aucune espérance de gain — il impose "
+                "seulement l'asymétrie, ce que le palier « couper court, laisser courir » "
+                "vous demande.",
+            )
+        )
+    elif ratio is None:
         advices.append(
             Advice(
                 Severity.INFO,
                 "Aucun objectif défini",
-                "Sans objectif, la sortie gagnante se décide dans l'euphorie — "
-                "généralement trop tôt. Fixer une cible, même approximative, permet de "
-                "juger le trade autrement que par son résultat.",
+                "Sans objectif ni stop suiveur, la sortie gagnante se décide dans "
+                "l'euphorie — généralement trop tôt. Fixer une cible, même approximative, "
+                "permet de juger le trade autrement que par son résultat.",
             )
         )
     elif ratio < 1.0:
@@ -324,13 +352,25 @@ def review_plan(
                 "l'opération perdante en moyenne.",
             )
         )
+    elif ratio < MIN_PLANNED_R:
+        advices.append(
+            Advice(
+                Severity.INFO,
+                f"Rapport gain/perte trop juste ({ratio:.2f})",
+                f"Il faudrait gagner {_break_even_rate(ratio):.0f} % de vos trades pour "
+                "seulement rentrer dans vos frais — et les commissions relèvent encore ce "
+                f"seuil. Le palier « couper court, laisser courir » demande {MIN_PLANNED_R:.1f} : "
+                "éloigner l'objectif ou rapprocher le stop vous laisse une marge d'erreur.",
+            )
+        )
     else:
         advices.append(
             Advice(
                 Severity.GOOD,
                 f"Rapport gain/perte de {ratio:.2f}",
-                "Vous visez plus que ce que vous risquez : le trade reste rentable même "
-                "en se trompant plus d'une fois sur deux.",
+                f"Vous visez plus que ce que vous risquez : {_break_even_rate(ratio):.0f} % de "
+                "trades gagnants suffisent à l'équilibre avant frais. C'est la seule marge "
+                "d'erreur qui se décide à l'avance.",
             )
         )
 

@@ -330,6 +330,53 @@ def test_review_warns_on_a_poor_reward_ratio(account):
     assert any("gain" in advice.title.lower() for advice in review.advices)
 
 
+def test_review_does_not_call_a_ratio_below_the_curriculum_threshold_good(account):
+    """1.2 fois le risque n'est pas « rentable en se trompant une fois sur deux ».
+
+    Il faut 45 % de reussite pour seulement rentrer dans ses frais. Annoncer
+    l'inverse serait une promesse fausse, et contredirait le palier 5 qui exige
+    MIN_PLANNED_R.
+    """
+    plan = TradePlan(symbol="AAA", shares=2.0, price=100.0, stop=95.0, target=106.0)
+    review = review_plan(plan, account, prices={})
+    ratio_advices = [a for a in review.advices if "gain/perte" in a.title]
+    assert [a.severity for a in ratio_advices] == [Severity.INFO]
+    assert "45 %" in ratio_advices[0].message
+
+
+def test_review_states_the_break_even_rate_of_a_good_ratio(account):
+    """Le seul chiffre honnete sur l'issue d'un trade : il ne prevoit rien."""
+    plan = TradePlan(symbol="AAA", shares=2.0, price=100.0, stop=95.0, target=115.0)
+    review = review_plan(plan, account, prices={})
+    good = [a for a in review.advices if "gain/perte" in a.title]
+    assert [a.severity for a in good] == [Severity.GOOD]
+    assert "25 %" in good[0].message
+
+
+def test_review_counts_a_trailing_stop_as_a_plan(account):
+    """Le palier 5 accepte le suiveur comme plan ; le conseil doit dire pareil."""
+    plan = TradePlan(symbol="AAA", shares=2.0, price=100.0, stop=95.0, trailing_pct=8.0)
+    review = review_plan(plan, account, prices={})
+    assert not any("Aucun objectif" in advice.title for advice in review.advices)
+    assert any(
+        "stop suiveur" in advice.title and advice.severity is Severity.GOOD
+        for advice in review.advices
+    )
+
+
+def test_review_still_flags_a_trade_without_objective_nor_trail(account):
+    plan = TradePlan(symbol="AAA", shares=2.0, price=100.0, stop=95.0)
+    review = review_plan(plan, account, prices={})
+    assert any("Aucun objectif" in advice.title for advice in review.advices)
+
+
+def test_review_reports_a_null_reward_ratio_as_zero_not_as_absent(account):
+    """Objectif pose au prix d'entree : le ratio vaut 0, ce n'est pas « pas d'objectif »."""
+    plan = TradePlan(symbol="AAA", shares=2.0, price=100.0, stop=95.0, target=100.0)
+    review = review_plan(plan, account, prices={})
+    assert review.to_dict()["reward_risk"] == 0.0
+
+
 def test_review_always_states_it_does_not_predict(account):
     """Garde-fou : le conseil ne doit jamais laisser croire a une prevision."""
     plan = TradePlan(symbol="AAA", shares=1.0, price=100.0, stop=95.0)
@@ -563,9 +610,11 @@ def test_debrief_never_contradicts_itself_about_the_stop(account):
     account.update_stop(account.state.positions[0].id, 101.0)
     trade = account.check_stops({"AAA": 97.0})[0]
     titles = [lesson.title for lesson in debrief_trade(trade, account.state).lessons]
-    assert sum("comme prévu" in title for title in titles) + sum(
-        "au-delà du stop" in title or "protégeait un gain" in title for title in titles
-    ) == 1, titles
+    assert (
+        sum("comme prévu" in title for title in titles)
+        + sum("au-delà du stop" in title or "protégeait un gain" in title for title in titles)
+        == 1
+    ), titles
 
 
 def test_debrief_names_a_stop_that_was_protecting_a_gain(account):
@@ -583,8 +632,19 @@ def test_every_displayed_lesson_is_written_in_correct_french(account):
     trade = account.check_stops({"AAA": 80.0})[0]
     debrief = debrief_trade(trade, account.state)
     texts = [debrief.verdict] + [f"{les.title} {les.message}" for les in debrief.lessons]
-    fautes = ("repeter", "methode", "duree", "reglage", "reflexe", "asymetrie",
-              "surdimensionnes", "ferme le", "prevu", "acceptee", "affiche n")
+    fautes = (
+        "repeter",
+        "methode",
+        "duree",
+        "reglage",
+        "reflexe",
+        "asymetrie",
+        "surdimensionnes",
+        "ferme le",
+        "prevu",
+        "acceptee",
+        "affiche n",
+    )
     for text in texts:
         for faute in fautes:
             assert faute not in text.lower(), f"{faute!r} sans accent dans : {text}"
