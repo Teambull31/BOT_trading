@@ -17,7 +17,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trader.coach.account import AccountState, ClosedTrade
-from trader.coach.curriculum import MAX_RISK_PCT
+from trader.coach.curriculum import (
+    MAX_RISK_PCT,
+    MIN_PLANNED_R,
+    break_even_rate,
+    planned_ratio,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,24 +195,37 @@ def debrief_trade(trade: ClosedTrade, state: AccountState) -> Debrief:
                 )
             )
 
-    # Un risque planifie nul (stop au-dessus de l'entree) ne se juge pas au
-    # rapport gain/perte : ce rapport serait infiniment favorable, pas nul.
-    if trade.pnl < 0 and trade.target and trade.planned_risk > 0:
-        planned_gain = (trade.target - trade.entry_price) * trade.shares
-        if planned_gain > 0:
-            ratio = planned_gain / trade.planned_risk
-            if ratio < 1.5:
-                lessons.append(
-                    Lesson(
-                        "chiffre",
-                        f"Le rapport gain/perte visé n'était que de {ratio:.2f}",
-                        f"Vous risquiez {trade.planned_risk:,.2f} EUR pour en espérer "
-                        f"{planned_gain:,.2f}. A ce rapport, il faut avoir raison bien plus "
-                        "d'une fois sur deux pour s'en sortir — or aucun signal mesuré dans "
-                        "ce dépôt ne procure un tel avantage. Viser au moins deux fois le "
-                        "risque rend le trade rentable même avec 40 % de réussite.",
-                    )
-                )
+    # Le meme rapport que le palier « couper court, laisser courir », calcule par
+    # la meme fonction : deux definitions du plan qui divergeraient reprocheraient
+    # a l'utilisateur deux choses differentes sous le meme nom.
+    #
+    # `planned_ratio` se tait d'elle-meme quand il n'y a rien a reprocher : pas de
+    # plan du tout (l'absence a sa propre lecon, plus haut), stop suiveur, ou
+    # risque planifie nul — stop deja remonte au-dessus de l'entree, ou le rapport
+    # est infiniment favorable et non nul.
+    ratio = planned_ratio(trade)
+    if ratio is not None and ratio < MIN_PLANNED_R:
+        planned_gain = ratio * trade.planned_risk
+        # Le plan se juge independamment de l'issue : un trade gagnant mal
+        # planifie est le cas ou la lecon se perd le plus facilement, parce que
+        # le resultat semble donner raison.
+        conclusion = (
+            "Ce trade a fini gagnant, mais c'est le tirage qui l'a voulu, pas le plan."
+            if trade.is_win
+            else "Aucun signal mesuré dans ce dépôt ne procure un tel avantage."
+        )
+        lessons.append(
+            Lesson(
+                "chiffre",
+                f"Le rapport gain/perte visé n'était que de {ratio:.2f}",
+                f"Vous risquiez {trade.planned_risk:,.2f} EUR pour en espérer "
+                f"{planned_gain:,.2f} : il aurait fallu gagner "
+                f"{break_even_rate(ratio):.0f} % de vos trades rien que pour rentrer "
+                f"dans vos frais. {conclusion} Viser {MIN_PLANNED_R:.1f} fois le risque "
+                f"ramène ce seuil à {break_even_rate(MIN_PLANNED_R):.0f} %, et c'est le "
+                "seul réglage qui se décide à l'avance.",
+            )
+        )
 
     if trade.holding_days == 0 and trade.pnl < 0:
         lessons.append(

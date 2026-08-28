@@ -20,7 +20,12 @@ from trader.coach.account import (
     PaperAccount,
 )
 from trader.coach.advisor import Severity, TradePlan, review_plan, suggest_size
-from trader.coach.curriculum import LEVELS, evaluate_progress
+from trader.coach.curriculum import (
+    LEVELS,
+    MIN_PLANNED_R,
+    break_even_rate,
+    evaluate_progress,
+)
 from trader.coach.debrief import debrief_trade, recurring_patterns
 from trader.coach.quotes import Quote, _parse_price
 
@@ -648,6 +653,45 @@ def test_every_displayed_lesson_is_written_in_correct_french(account):
     for text in texts:
         for faute in fautes:
             assert faute not in text.lower(), f"{faute!r} sans accent dans : {text}"
+
+
+def test_weak_plan_lesson_fires_on_a_winning_trade_too(account):
+    """Le cas ou la lecon se perd : le resultat semble donner raison au plan.
+
+    Juger la decision et non le resultat, c'est aussi reprocher un mauvais plan
+    a un trade qui a gagne. Ne le dire qu'aux perdants apprendrait a confondre
+    chance et competence — exactement ce que ce module refuse.
+    """
+    trade = _trade(pnl=40.0, entry=100.0, stop=95.0, shares=1.0, target=102.0)
+    lessons = debrief_trade(trade, account.state).lessons
+    faibles = [lesson for lesson in lessons if "rapport gain/perte visé" in lesson.title]
+    assert len(faibles) == 1
+    assert "0.40" in faibles[0].title
+    # 1 / (1 + 0.4) = 71 %, et le seuil du palier ramene a 40 %.
+    assert "71 %" in faibles[0].message
+    assert "40 %" in faibles[0].message
+    assert "le tirage" in faibles[0].message
+
+
+def test_weak_plan_lesson_uses_the_curriculum_threshold(account):
+    """Un plan conforme au palier ne doit rien se voir reprocher."""
+    trade = _trade(pnl=-5.0, entry=100.0, stop=95.0, shares=1.0, target=110.0)
+    lessons = debrief_trade(trade, account.state).lessons
+    assert not any("rapport gain/perte visé" in lesson.title for lesson in lessons)
+
+
+def test_no_weak_plan_lesson_for_a_trailing_stop(account):
+    """Le suiveur ne plafonne rien : il n'y a pas de rapport a reprocher."""
+    trade = _trade(pnl=-5.0, entry=100.0, stop=95.0, shares=1.0, trailing=8.0)
+    lessons = debrief_trade(trade, account.state).lessons
+    assert not any("rapport gain/perte visé" in lesson.title for lesson in lessons)
+
+
+def test_break_even_rate_is_the_inverse_of_one_plus_the_ratio():
+    """La seule affirmation chiffree que l'app fasse sur l'issue d'un trade."""
+    assert break_even_rate(1.0) == pytest.approx(50.0)
+    assert break_even_rate(MIN_PLANNED_R) == pytest.approx(40.0)
+    assert break_even_rate(3.0) == pytest.approx(25.0)
 
 
 def test_no_reward_ratio_lesson_when_nothing_was_risked(account):

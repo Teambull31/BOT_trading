@@ -35,6 +35,21 @@ MIN_PLANNED_R: float = 1.5
 """Gain visé minimal, en multiples de la perte acceptée, décidé A L'ENTREE."""
 
 
+def break_even_rate(ratio: float) -> float:
+    """Part de trades gagnants, en %, qu'il faut atteindre pour finir à l'équilibre.
+
+    Gagner `ratio` fois la mise `p` fois sur cent et la perdre le reste du temps
+    laisse `p * ratio - (1 - p)` : nul pour `p = 1 / (1 + ratio)`. Chiffre AVANT
+    frais — commissions et écart de cotation relèvent le seuil réel.
+
+    C'est le seul repère chiffré que cette app puisse donner honnêtement sur
+    l'issue d'un trade : il ne suppose aucune prévision, seulement ce que
+    l'utilisateur a placé en face de son stop. C'est aussi ce qui justifie
+    `MIN_PLANNED_R` — à 1.5, il reste de la marge (40 %) ; à 1.1, presque plus.
+    """
+    return 100.0 / (1.0 + ratio)
+
+
 @dataclass(frozen=True, slots=True)
 class Level:
     """Un palier du parcours."""
