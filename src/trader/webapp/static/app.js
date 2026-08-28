@@ -301,7 +301,18 @@ window.moveStop = async (id) => {
   if (!value) return;
   try {
     const result = await api('/api/stop', { method: 'POST', body: JSON.stringify({ position_id: id, stop: value }) });
-    if (result.widened) {
+    if (result.triggers_now) {
+      // Un stop pose au-dessus du cours est deja touche : ce n'est plus une
+      // protection, c'est une vente. Le dire ici, pendant que la position
+      // existe encore, est la seule occasion de corriger la confusion.
+      alert(
+        `Ce niveau (${euro(result.stop)} €) est au-dessus du cours actuel (${euro(result.price)} €).\n\n` +
+          "Un stop au-dessus du cours est un stop déjà touché : ce n'est pas une protection, " +
+          "c'est un ordre de vente. La position sera soldée au prochain rafraîchissement, au " +
+          "cours du moment — pas au niveau que vous venez de poser.\n\nPour verrouiller un gain " +
+          'sans vendre, placez le stop SOUS le cours, ou utilisez le stop suiveur.'
+      );
+    } else if (result.widened) {
       alert(
         "Stop élargi.\n\nC'est enregistré et cela apparaîtra dans le débrief. Reculer un stop " +
           'transforme une petite perte prévue en grande perte subie — si le stop vous paraît ' +

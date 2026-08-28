@@ -132,3 +132,43 @@ def test_state_reports_a_gain_locked_by_the_stop_as_a_negative_risk(client, monk
     etat = client.get("/api/state").json()
     assert etat["positions"], "la position ne devait pas etre soldee"
     assert etat["positions"][0]["risk_at_stop"] < 0
+
+
+def test_moving_a_stop_above_the_price_announces_the_sale_it_really_is(client):
+    """Un stop pose au-dessus du cours est deja touche : c'est une vente.
+
+    Le serveur doit le dire pendant que la position existe encore. Le test
+    verifie les deux moities de la promesse : l'annonce, puis la sortie qu'elle
+    annonce — un message qui ne correspondrait pas au comportement serait pire
+    que pas de message du tout.
+    """
+    position = _ouvre(client)
+    reponse = client.post("/api/stop", json={"position_id": position["id"], "stop": 120.0})
+    assert reponse.status_code == 200, reponse.text
+    corps = reponse.json()
+    assert corps["triggers_now"] is True
+    assert corps["price"] == pytest.approx(100.0)
+
+    assert client.get("/api/state").json()["positions"] == []
+
+
+def test_moving_a_stop_below_the_price_is_not_announced_as_a_sale(client):
+    """Resserrer un stop sous le cours protege : rien a signaler."""
+    position = _ouvre(client)
+    reponse = client.post("/api/stop", json={"position_id": position["id"], "stop": 98.0})
+    assert reponse.status_code == 200, reponse.text
+    assert reponse.json()["triggers_now"] is False
+    assert client.get("/api/state").json()["positions"], "la position devait rester ouverte"
+
+
+def test_a_widened_stop_is_still_flagged_as_such(client):
+    """Le signalement d'elargissement ne doit pas avoir ete perdu en chemin."""
+    position = _ouvre(client)
+    reponse = client.post("/api/stop", json={"position_id": position["id"], "stop": 90.0})
+    assert reponse.json() == {
+        "ok": True,
+        "stop": pytest.approx(90.0),
+        "widened": True,
+        "price": pytest.approx(100.0),
+        "triggers_now": False,
+    }

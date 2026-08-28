@@ -378,7 +378,16 @@ def create_app(
 
     @app.post("/api/stop")
     def post_stop(request: StopRequest) -> dict:
-        """Deplace un stop. Un elargissement est trace et rappele au debrief."""
+        """Deplace un stop. Un elargissement est trace et rappele au debrief.
+
+        La reponse dit aussi si le niveau pose est DEJA touche. Un stop au-dessus
+        du cours n'est pas une protection, c'est un ordre de vente : `check_stops`
+        soldera la position au prochain rafraichissement, au cours observe et non
+        a ce niveau. Sans ce signalement, l'utilisateur qui croit verrouiller un
+        gain voit sa position disparaitre sans explication — la confusion la plus
+        facile a faire sur ce qu'est un stop, et la moins facile a rattraper une
+        fois le trade solde.
+        """
         try:
             before = account.find_position(request.position_id).stop
             position = account.update_stop(request.position_id, request.stop)
@@ -386,7 +395,22 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return {"ok": True, "stop": position.stop, "widened": request.stop < before}
+
+        price = None
+        try:
+            price = fetch_quote(position.symbol).price
+        except QuoteError:
+            # Sans cotation, on n'affirme rien : mieux vaut se taire que
+            # d'annoncer une sortie qui n'aura peut-etre pas lieu.
+            log.warning("stop_sans_cotation", symbol=position.symbol)
+
+        return {
+            "ok": True,
+            "stop": position.stop,
+            "widened": request.stop < before,
+            "price": None if price is None else round(price, 4),
+            "triggers_now": price is not None and position.stop >= price,
+        }
 
     @app.post("/api/trailing")
     def post_trailing(request: TrailingRequest) -> dict:
