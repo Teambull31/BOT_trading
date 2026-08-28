@@ -444,14 +444,25 @@ async function reviewTrade() {
   try {
     const review = await api('/api/review', { method: 'POST', body: JSON.stringify(plan) });
     pendingPlan = { ...plan, rationale: $('t-rationale').value };
+    // Le stop en vigueur n'est pas toujours celui qui a ete saisi : un suiveur
+    // plus serre le remonte des l'entree. La decision se prend ici, pas dans
+    // l'alerte qui suit la confirmation — c'est donc ici qu'il faut le lire.
+    const stopLabel = review.trailing_overrides_stop ? 'Stop en vigueur (suiveur)' : 'Stop en vigueur';
     $('review-metrics').innerHTML = [
       { l: 'Risque', v: review.risk_pct.toFixed(2) + ' %' },
       { l: 'Perte au stop', v: euro(review.risk_amount) + ' €' },
       { l: 'Part du compte', v: review.position_pct.toFixed(0) + ' %' },
+      { l: stopLabel, v: euro(review.effective_stop) + ' €' },
       { l: 'Distance au stop', v: review.stop_distance_pct.toFixed(1) + ' %' },
-      { l: 'Gain / perte', v: review.reward_risk ? review.reward_risk.toFixed(2) : '—' },
+      // `0` est un rapport gain/perte — objectif pose au prix d'entree — et non
+      // une absence d'objectif. Le tester comme un booleen l'afficherait « — ».
+      { l: 'Gain / perte', v: review.reward_risk === null ? '—' : review.reward_risk.toFixed(2) },
     ]
-      .map((m) => `<div class="rm"><div class="rm-label">${m.l}</div><div class="rm-value">${m.v}</div></div>`)
+      .map(
+        (m) =>
+          `<div class="rm${m.l === stopLabel && review.trailing_overrides_stop ? ' rm-alert' : ''}">`
+          + `<div class="rm-label">${m.l}</div><div class="rm-value">${m.v}</div></div>`
+      )
       .join('');
     $('advices').innerHTML = review.advices
       .map(
