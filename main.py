@@ -1,6 +1,14 @@
 """Point d'entree de l'application hebergee (fonction sans serveur Vercel).
 
-Deux differences avec le lancement local, toutes deux imposees par l'hebergement :
+Ce fichier est a la racine, et non dans un dossier `api/`, parce que les deux
+emplacements ne veulent pas dire la meme chose sur Vercel. Un fichier de `api/`
+est une fonction adressee par son chemin : `api/index.py` ne repond qu'a
+l'adresse `/api/index`. Une application ASGI declaree a la racine recoit au
+contraire TOUT le trafic, chemin d'origine compris, et c'est FastAPI qui
+choisit la route -- le seul montage ou `@app.get("/")` sert bien `/`.
+
+Deux differences avec le lancement local, toutes deux imposees par
+l'hebergement :
 
 1. Aucun disque durable. Le repertoire temporaire n'est qu'un cache de travail,
    efface a tout moment ; la reference du compte est detenue par le navigateur
@@ -19,7 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from trader.webapp.server import create_app  # noqa: E402

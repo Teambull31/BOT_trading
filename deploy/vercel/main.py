@@ -1,10 +1,15 @@
 """Point d'entree sans serveur pour l'envoi manuel vers Vercel.
 
-Le depot contient deja un `api/index.py` a la racine : c'est celui qu'utilise un
+Le depot contient deja un `main.py` a la racine : c'est celui qu'utilise un
 projet Vercel relie a Git, ou les sources sont sur place. Ce fichier-ci sert au
 cas ou elles ne le sont pas -- le canal d'envoi manuel disponible ici ne
 transporte que quelques fichiers -- et va donc chercher l'arborescence
 `src/trader` dans l'archive publique de la branche, une fois par instance.
+
+Comme son homologue, il vit a la racine de l'envoi et non dans un dossier
+`api/` : sur Vercel, un fichier de `api/` n'est joignable qu'a l'adresse qui
+porte son nom, tandis qu'une application ASGI declaree a la racine recoit tout
+le trafic avec son chemin d'origine, seul cas ou FastAPI peut router lui-meme.
 
 Trois contraintes d'hebergement expliquent le reste :
   - le disque est en lecture seule sauf /tmp, d'ou le depliage dans /tmp ;
@@ -51,7 +56,7 @@ def _download() -> None:
 
 def _sources() -> Path:
     """Chemin d'import : les sources locales si elles sont la, sinon l'archive."""
-    local = Path(__file__).resolve().parent.parent / "src"
+    local = Path(__file__).resolve().parent / "src"
     if (local / "trader" / "webapp" / "server.py").exists():
         return local
     if not _MARKER.exists():

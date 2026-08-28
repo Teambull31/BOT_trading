@@ -340,10 +340,17 @@ etre expose sur un reseau.
 
 ### Mise en ligne (Vercel)
 
-L'application peut tourner en fonction sans serveur : `api/index.py` en est le
+L'application peut tourner en fonction sans serveur : `main.py` en est le
 point d'entree, `vercel.json` la configuration, `requirements.txt` les seules
 dependances embarquees (FastAPI, httpx, pydantic, structlog — ni pandas ni
 scikit-learn, que le serveur web n'importe jamais).
+
+Le point d'entree est a la RACINE et `vercel.json` ne declare AUCUNE
+reecriture : c'est le seul montage ou FastAPI recoit le chemin demande. Un
+fichier place dans `api/` ne repond qu'a l'adresse qui porte son nom, et une
+reecriture attrape-tout remplace le chemin au lieu de le conserver — les deux
+combines renvoyaient `{"detail":"identifiant de compte absent ou invalide"}`
+sur toutes les adresses. Voir `deploy/vercel/README.md`.
 
 Deux contraintes de l'hebergement ont impose une conception differente du mode
 local, et il faut les avoir en tete avant de mettre l'application en ligne :
