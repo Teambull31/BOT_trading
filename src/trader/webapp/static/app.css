@@ -230,6 +230,10 @@ button:hover { filter: brightness(1.12); }
 .pos-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .pos-actions input { width: 110px; padding: 7px 10px; font-size: 13.5px; }
 .alert-stop { color: var(--loss); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+/* Le pendant du precedent : le stop est passe au-dessus du prix de revient et
+   le trade ne peut plus rien couter. Une bonne nouvelle merite d'etre aussi
+   visible qu'une alerte, sinon seul le danger s'apprend. */
+.alert-locked { color: var(--win); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 
 /* ----------------------------------------------------------------- niveaux */
 

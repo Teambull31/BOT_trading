@@ -1,4 +1,4 @@
-"""Contrat de `/api/review` et `/api/suggest-size` avec l'interface.
+"""Contrat du serveur avec l'interface : les chiffres que l'ecran affiche.
 
 L'interface affiche le stop REELLEMENT en vigueur et le rapport gain/perte au
 moment ou l'utilisateur decide. Ces deux chiffres viennent du serveur ; s'ils
@@ -21,12 +21,13 @@ from trader.coach.quotes import Quote
 from trader.webapp import server as webapp
 
 
-@pytest.fixture(autouse=True)
-def cotations_figees(monkeypatch):
+def _fige_le_cours(monkeypatch, prix: float) -> None:
+    """Remplace les cotations par un cours constant, sans acces reseau."""
+
     def quote(symbol: str) -> Quote:
         return Quote(
             symbol=symbol.upper(),
-            price=100.0,
+            price=prix,
             change=0.0,
             change_pct=0.0,
             previous_close=100.0,
@@ -37,6 +38,12 @@ def cotations_figees(monkeypatch):
 
     monkeypatch.setattr(webapp, "fetch_quote", quote)
     monkeypatch.setattr(webapp, "fetch_quotes", lambda symbols: {s: quote(s) for s in symbols})
+
+
+@pytest.fixture(autouse=True)
+def cotations_figees(monkeypatch):
+    """Cours a 100.00 par defaut ; un test qui a besoin d'un autre le repose."""
+    _fige_le_cours(monkeypatch, 100.0)
 
 
 @pytest.fixture
@@ -89,3 +96,39 @@ def test_suggest_size_omits_the_objective_when_the_stop_is_above_the_price(clien
     )
     assert reponse.status_code == 200, reponse.text
     assert reponse.json()["suggested_target"] is None
+
+
+def _ouvre(client: TestClient, **plan) -> dict:
+    reponse = client.post("/api/open", json={"symbol": "AAA", "shares": 2.0, "stop": 95.0, **plan})
+    assert reponse.status_code == 200, reponse.text
+    return client.get("/api/state").json()["positions"][0]
+
+
+def test_state_publishes_the_euros_still_at_risk(client):
+    """Le pourcentage de marge ne dit pas combien d'euros sont en jeu.
+
+    C'est pourtant ce chiffre que l'utilisateur decide, et l'interface ne peut
+    pas le recalculer : les frais des deux ordres n'y sont pas.
+    """
+    position = _ouvre(client)
+    assert position["risk_at_stop"] > 0
+    # Perte brute : 2 titres entres a 100.05 (slippage) sortis vers 95.
+    # Les frais des deux ordres la creusent, ils ne l'allegent jamais.
+    assert position["risk_at_stop"] > 2.0 * (100.0 - 95.0)
+
+
+def test_state_reports_a_gain_locked_by_the_stop_as_a_negative_risk(client, monkeypatch):
+    """Stop remonte au-dessus du prix de revient : le trade ne peut plus couter.
+
+    Le cours doit monter d'abord : un stop pose au-dessus du cours est un stop
+    TOUCHE, et le serveur solde la position au rafraichissement suivant.
+    """
+    position = _ouvre(client)
+    _fige_le_cours(monkeypatch, 130.0)
+
+    reponse = client.post("/api/stop", json={"position_id": position["id"], "stop": 120.0})
+    assert reponse.status_code == 200, reponse.text
+
+    etat = client.get("/api/state").json()
+    assert etat["positions"], "la position ne devait pas etre soldee"
+    assert etat["positions"][0]["risk_at_stop"] < 0

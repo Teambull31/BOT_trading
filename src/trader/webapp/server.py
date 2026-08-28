@@ -234,6 +234,11 @@ def create_app(
                     "unrealised": round(position.unrealised(price), 2),
                     "unrealised_pct": round(position.unrealised_pct(price), 2),
                     "distance_to_stop_pct": round(position.distance_to_stop_pct(price), 2),
+                    # Ce que la position coute encore si le stop tombe, frais
+                    # compris. Negatif, c'est un gain deja verrouille. Le
+                    # pourcentage seul ne dit pas a l'utilisateur combien
+                    # d'euros sont en jeu, et c'est ce chiffre-la qu'il decide.
+                    "risk_at_stop": round(position.risk_at_stop(), 2),
                     "opened_at": position.opened_at,
                     "rationale": position.rationale,
                     "live": position.symbol in prices,

@@ -320,6 +320,39 @@ def test_suggest_size_is_zero_when_stop_is_above_price():
     assert suggest_size(1000.0, 100.0, 105.0) == 0.0
 
 
+def test_risk_at_stop_is_exactly_the_loss_that_would_be_booked(account):
+    """Le chiffre montre a l'utilisateur doit etre celui qu'il perdrait vraiment.
+
+    Frais des deux ordres et ecart de cotation compris : une difference
+    entree/stop toute nue minore la perte, et l'app afficherait un risque
+    plus doux que la realite qu'elle simule elle-meme.
+    """
+    position = account.open_position("AAA", shares=5.0, price=100.0, stop=95.0)
+    annonce = position.risk_at_stop()
+    assert annonce > 0
+
+    # Le stop est touche : on solde AU niveau du stop, l'hypothese exacte du
+    # chiffre annonce. Le resultat inscrit doit en etre l'oppose, au centime.
+    trade = account.close_position(position.id, 95.0, reason="stop_touche")
+    assert trade.pnl == pytest.approx(-annonce)
+
+
+def test_risk_at_stop_turns_into_a_locked_gain_once_the_stop_passes_the_entry(account):
+    """Stop remonte au-dessus du prix de revient : le trade ne peut plus couter.
+
+    C'est ce que le stop suiveur du parcours cherche a produire, et le signe
+    negatif est la seule facon de le dire sans promettre quoi que ce soit sur
+    la suite du cours.
+    """
+    position = account.open_position("AAA", shares=5.0, price=100.0, stop=95.0)
+    assert position.risk_at_stop() > 0
+
+    account.update_stop(position.id, 110.0)
+    verrouille = account.find_position(position.id).risk_at_stop()
+    assert verrouille < 0
+    assert account.close_position(position.id, 110.0).pnl == pytest.approx(-verrouille)
+
+
 def test_suggest_target_places_the_objective_at_the_curriculum_ratio():
     """L'objectif propose est le seuil du palier traduit en prix."""
     # 100 - 95 = 5 de perte acceptee ; 1.5 fois cette perte porte la cible a 107.5.

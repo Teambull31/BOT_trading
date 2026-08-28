@@ -146,6 +146,11 @@ function renderPositions(positions) {
     .map((p) => {
       const margin = Math.max(0, Math.min(100, p.distance_to_stop_pct * 5));
       const near = p.distance_to_stop_pct < 3;
+      // Un risque negatif n'est pas une perte : le stop est passe au-dessus du
+      // prix de revient et le trade ne peut plus rien couter. C'est le seul
+      // resultat que la gestion du risque produise a coup sur, et il meritait
+      // d'etre annonce plutot que laisse a deduire de deux prix.
+      const locked = p.risk_at_stop <= 0;
       return `<div class="position">
         <div class="pos-head">
           <div>
@@ -159,12 +164,14 @@ function renderPositions(positions) {
         ${near ? `<div class="alert-stop">⚠ Le stop est à ${p.distance_to_stop_pct.toFixed(2)} % — une séance ordinaire suffit à le déclencher.</div>` : ''}
         <div class="stop-bar"><div class="stop-fill" style="width:${margin}%;background:${stopColor(p.distance_to_stop_pct)}"></div></div>
         <div class="muted small" style="margin-bottom:12px">Marge avant le stop : ${p.distance_to_stop_pct.toFixed(2)} %</div>
+        ${locked ? `<div class="alert-locked">✓ Ce trade ne peut plus coûter d'argent : au stop, il rapporterait encore ${euro(-p.risk_at_stop)} €. Le laisser courir ne risque plus que le gain, jamais le capital.</div>` : ''}
         <div class="pos-grid">
           <div><div class="pg-label">Cours</div><div class="pg-value">${euro(p.price)}</div></div>
           <div><div class="pg-label">Stop</div><div class="pg-value">${euro(p.stop)}</div></div>
           <div><div class="pg-label">Objectif</div><div class="pg-value">${p.target ? euro(p.target) : '—'}</div></div>
           <div><div class="pg-label">Suiveur</div><div class="pg-value">${p.trailing_pct ? p.trailing_pct.toFixed(1) + ' %' : '—'}</div></div>
           <div><div class="pg-label">Valeur</div><div class="pg-value">${euro(p.value)} €</div></div>
+          <div><div class="pg-label">${locked ? 'Gain verrouillé' : 'Perte si le stop tombe'}</div><div class="pg-value ${locked ? 'pos' : 'neg'}">${euro(Math.abs(p.risk_at_stop))} €</div></div>
         </div>
         ${p.rationale ? `<div class="muted small" style="margin-bottom:12px">« ${p.rationale} »</div>` : ''}
         <div class="pos-actions">

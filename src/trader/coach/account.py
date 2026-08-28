@@ -103,8 +103,24 @@ class Position:
         return self.shares * self.entry_price
 
     def risk_at_stop(self) -> float:
-        """Perte si le stop est touché, frais d'entrée inclus."""
-        return (self.entry_price - self.stop) * self.shares + self.entry_costs
+        """Ce que la position coûterait encore si le stop tombait maintenant.
+
+        Positif, c'est la perte qui reste exposée. Négatif, le stop est passé
+        au-dessus du prix de revient : le trade ne peut plus rien coûter et le
+        chiffre est un gain déjà acquis. C'est précisément ce que le stop
+        suiveur du parcours cherche à produire, et l'application ne le disait
+        nulle part.
+
+        Frais des deux ordres et écart de cotation compris — le montant rendu
+        est exactement l'inverse du résultat que `close_position` inscrirait à
+        ce prix-là, et non la différence théorique entre l'entrée et le stop,
+        qui minore la perte. Il suppose en revanche une sortie AU niveau du
+        stop ; sur un écart brutal elle se fait plus bas, et `check_stops`
+        solde alors au cours réellement observé.
+        """
+        fill = self.stop * (1.0 - SLIPPAGE_PCT / 100.0)
+        proceeds = self.shares * fill
+        return self.cost_basis + self.entry_costs + PaperAccount.costs_for(proceeds) - proceeds
 
     def value(self, price: float) -> float:
         """Valeur courante."""
