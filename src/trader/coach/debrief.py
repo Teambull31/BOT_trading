@@ -20,8 +20,10 @@ from trader.coach.account import AccountState, ClosedTrade
 from trader.coach.curriculum import (
     MAX_RISK_PCT,
     MIN_PLANNED_R,
+    REVENGE_MULTIPLE,
     break_even_rate,
     planned_ratio,
+    revenge_multiple,
 )
 
 
@@ -327,6 +329,30 @@ def recurring_patterns(state: AccountState, minimum: int = 5) -> list[Lesson]:
                 "Vos stops sont dans le bruit de la séance. Chaque aller-retour paie des "
                 "frais avec certitude et n'attrape une tendance qu'avec espoir. Élargir "
                 "le stop et réduire la taille change ce rapport.",
+            )
+        )
+
+    # Se juge sur l'ORDRE des trades, et sur rien d'autre : une mise plus grosse
+    # n'est une revanche que si elle SUIT une perte. Chacune est mesuree contre
+    # l'habitude telle qu'elle etait A CE MOMENT-LA (`trades[:i]`), jamais contre
+    # l'habitude d'aujourd'hui — sinon la faute serait jugee sur des trades qui
+    # n'avaient pas encore eu lieu quand elle a ete commise.
+    revanches = sum(
+        1
+        for i in range(len(trades) - len(recent), len(trades))
+        if (m := revenge_multiple(trades[:i], trades[i].planned_risk)) is not None
+        and m >= REVENGE_MULTIPLE
+    )
+    if revanches >= max(2, len(recent) // 5):
+        lessons.append(
+            Lesson(
+                "process",
+                f"Mise augmentée après une perte {revanches} fois sur {len(recent)}",
+                "Se refaire est le réflexe qui vide les comptes le plus vite, et il ne "
+                "se voit dans aucune moyenne : chaque trade pris isolément peut "
+                "paraître raisonnable. Une perte ne rend pas le trade suivant plus "
+                "probable — le marché ignore ce que vous venez de perdre. Décidez la "
+                "taille sur le capital du jour, jamais sur le dernier résultat.",
             )
         )
 

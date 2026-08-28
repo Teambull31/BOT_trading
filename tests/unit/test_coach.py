@@ -29,9 +29,12 @@ from trader.coach.advisor import (
 from trader.coach.curriculum import (
     LEVELS,
     MAX_OPEN_RISK_PCT,
+    MAX_RISK_PCT,
     MIN_PLANNED_R,
     break_even_rate,
     evaluate_progress,
+    revenge_multiple,
+    usual_risk,
 )
 from trader.coach.debrief import debrief_trade, recurring_patterns
 from trader.coach.quotes import Quote, _parse_price
@@ -585,6 +588,117 @@ def test_recurring_patterns_detect_bad_asymmetry(account):
     account.state.history = history
     patterns = recurring_patterns(account.state)
     assert any("moyenne" in lesson.title for lesson in patterns)
+
+
+# ------------------------------------------------------- se refaire apres une perte
+
+
+def test_usual_risk_is_the_median_so_the_fault_cannot_raise_its_own_bar():
+    """Une moyenne monterait avec les trades qu'il s'agit justement de detecter."""
+    normaux = [_trade(symbol=f"N{i}", stop=95.0, days_ago=20 - i) for i in range(4)]
+    enorme = _trade(symbol="X", stop=0.0, shares=1.0, days_ago=10)  # 100 EUR de risque
+    assert usual_risk(normaux) == pytest.approx(5.0)
+    assert usual_risk([*normaux, enorme]) == pytest.approx(5.0)
+
+
+def test_usual_risk_stays_silent_when_there_is_nothing_to_compare():
+    """Sans reference, un multiple serait arbitraire — et un conseil arbitraire nuit."""
+    assert usual_risk([]) is None
+    # Stops deja au-dessus de l'entree : aucune perte n'etait planifiee.
+    verrouilles = [_trade(symbol=f"V{i}", entry=100.0, stop=110.0) for i in range(3)]
+    assert usual_risk(verrouilles) is None
+
+
+def test_revenge_multiple_only_speaks_after_a_loss():
+    """La question ne se pose qu'apres une perte : ailleurs, la taille est un choix."""
+    gagnants = [_trade(symbol=f"W{i}", pnl=5.0, days_ago=20 - i) for i in range(3)]
+    assert revenge_multiple(gagnants, 50.0) is None
+
+    apres_perte = [*gagnants, _trade(symbol="L", pnl=-5.0, days_ago=5)]
+    assert revenge_multiple(apres_perte, 15.0) == pytest.approx(3.0)
+
+
+def test_review_warns_when_the_stake_grows_right_after_a_loss(account):
+    """Le trade peut respecter chaque limite et rester une revanche.
+
+    Rien d'autre dans la revue ne regarde l'ORDRE des trades : sans ce controle,
+    tripler la mise pour se refaire passait sans un mot.
+    """
+    account.state.history = [
+        _trade(symbol=f"H{i}", pnl=-5.0, entry=100.0, stop=95.0, days_ago=20 - i)
+        for i in range(4)
+    ]
+    # 15 EUR au stop pour 5 EUR d'habitude, et 1.5 % du capital : sous MAX_RISK_PCT.
+    plan = TradePlan(symbol="ZZZ", shares=1.0, price=100.0, stop=85.0, target=130.0)
+    review = review_plan(plan, account, prices={})
+    revanche = [a for a in review.advices if "d'habitude" in a.title]
+    assert len(revanche) == 1
+    assert revanche[0].severity is Severity.WARNING
+    assert "3.0 fois" in revanche[0].title
+    assert review.risk_pct < MAX_RISK_PCT  # rien d'autre ne l'aurait signale
+
+
+def test_review_credits_a_stake_held_after_a_loss(account):
+    """Tenir sa taille apres une perte est le comportement que le parcours vise."""
+    account.state.history = [
+        _trade(symbol=f"H{i}", pnl=-5.0, entry=100.0, stop=95.0, days_ago=20 - i)
+        for i in range(4)
+    ]
+    plan = TradePlan(symbol="ZZZ", shares=1.0, price=100.0, stop=95.0, target=110.0)
+    review = review_plan(plan, account, prices={})
+    tenue = [a for a in review.advices if a.title == "Taille tenue après une perte"]
+    assert len(tenue) == 1
+    assert tenue[0].severity is Severity.GOOD
+
+
+def test_review_names_a_shrunken_stake_for_what_it_is(account):
+    """Diviser la mise apres une perte n'est pas dangereux, mais ce n'est pas non
+    plus de la discipline : c'est encore le dernier resultat qui decide."""
+    account.state.history = [
+        _trade(symbol=f"H{i}", pnl=-5.0, entry=100.0, stop=95.0, days_ago=20 - i)
+        for i in range(4)
+    ]
+    plan = TradePlan(symbol="ZZZ", shares=1.0, price=100.0, stop=98.0, target=106.0)
+    review = review_plan(plan, account, prices={})
+    reduite = [a for a in review.advices if "divisée" in a.title]
+    assert len(reduite) == 1
+    assert reduite[0].severity is Severity.INFO
+    assert not any(a.title == "Taille tenue après une perte" for a in review.advices)
+
+
+def test_review_says_nothing_about_revenge_after_a_winning_trade(account):
+    """Grossir apres un GAIN n'est pas la meme faute, et ne se reproche pas ici."""
+    account.state.history = [
+        _trade(symbol=f"H{i}", pnl=5.0, entry=100.0, stop=95.0, days_ago=20 - i)
+        for i in range(4)
+    ]
+    plan = TradePlan(symbol="ZZZ", shares=1.0, price=100.0, stop=85.0, target=130.0)
+    review = review_plan(plan, account, prices={})
+    assert not any("d'habitude" in a.title for a in review.advices)
+    assert not any("après une perte" in a.title for a in review.advices)
+
+
+def test_recurring_patterns_detect_the_habit_of_doubling_after_a_loss(account):
+    """Chaque revanche est jugee sur l'habitude D'ALORS, pas celle d'aujourd'hui."""
+    histoire = []
+    for i in range(3):
+        histoire.append(_trade(symbol=f"N{i}", pnl=-5.0, stop=95.0, days_ago=40 - i * 3))
+        # Trade suivant : quatre fois la mise, juste apres la perte.
+        histoire.append(
+            _trade(symbol=f"R{i}", pnl=-20.0, stop=80.0, days_ago=39 - i * 3)
+        )
+    account.state.history = histoire
+    patterns = recurring_patterns(account.state)
+    assert any("Mise augmentée après une perte" in lesson.title for lesson in patterns)
+
+
+def test_recurring_patterns_ignore_a_steady_stake(account):
+    """Perdre souvent n'est pas une faute ; c'est changer de mise qui en est une."""
+    account.state.history = [
+        _trade(symbol=f"S{i}", pnl=-5.0, stop=95.0, days_ago=40 - i) for i in range(8)
+    ]
+    patterns = recurring_patterns(account.state)
+    assert not any("Mise augmentée" in lesson.title for lesson in patterns)
 
 
 def test_review_blocks_concentration_even_when_stop_risk_looks_small(account):

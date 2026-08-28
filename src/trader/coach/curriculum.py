@@ -44,6 +44,21 @@ OVERTRADE_PER_WEEK: int = 5
 MIN_PLANNED_R: float = 1.5
 """Gain visé minimal, en multiples de la perte acceptée, décidé A L'ENTREE."""
 
+REVENGE_MULTIPLE: float = 1.5
+"""Multiple de la mise habituelle au-dela duquel un trade pris APRES UNE PERTE
+cesse d'etre une decision et devient une revanche.
+
+Aucun palier ne borne cela : chaque trade peut respecter `MAX_RISK_PCT` et leur
+somme `MAX_OPEN_RISK_PCT` pendant que l'utilisateur remet systematiquement plus
+gros juste apres avoir perdu — pour "se refaire". C'est la faute qui vide les
+comptes le plus vite, parce qu'elle augmente la mise exactement quand le
+jugement est le plus mauvais, et parce qu'elle est invisible dans les moyennes :
+elle ne se voit que dans l'ORDRE des trades.
+
+1.5 fois la mise habituelle, et non deux : au-dela de la moitie en plus, le
+choix ne s'explique plus par la seule difference de distance au stop.
+"""
+
 
 def break_even_rate(ratio: float) -> float:
     """Part de trades gagnants, en %, qu'il faut atteindre pour finir à l'équilibre.
@@ -58,6 +73,47 @@ def break_even_rate(ratio: float) -> float:
     `MIN_PLANNED_R` — à 1.5, il reste de la marge (40 %) ; à 1.1, presque plus.
     """
     return 100.0 / (1.0 + ratio)
+
+
+def usual_risk(history: list[ClosedTrade], window: int = 10) -> float | None:
+    """Mise habituelle de l'utilisateur : la MEDIANE des risques planifies.
+
+    Mediane et non moyenne : c'est ce chiffre qui sert de reference pour
+    reperer un trade surdimensionne, et une moyenne se laisserait tirer vers le
+    haut par les trades memes qu'il s'agit de detecter — le repere monterait
+    avec la faute, jusqu'a ne plus rien signaler.
+
+    `None` quand il n'y a rien a comparer : sans trades passes, ou quand tous
+    ont un risque planifie nul (stops deja au-dessus de l'entree), toute
+    comparaison serait arbitraire, et un conseil arbitraire est pire que pas
+    de conseil.
+    """
+    mises = sorted(t.planned_risk for t in history[-window:] if t.planned_risk > 0)
+    if not mises:
+        return None
+    milieu = len(mises) // 2
+    if len(mises) % 2:
+        return mises[milieu]
+    return (mises[milieu - 1] + mises[milieu]) / 2.0
+
+
+def revenge_multiple(history: list[ClosedTrade], risk_amount: float) -> float | None:
+    """Combien de fois la mise habituelle represente un trade pris APRES UNE PERTE.
+
+    `None` des que la question ne se pose pas : aucun trade passe, dernier trade
+    gagnant, ou mise habituelle non mesurable. La comparaison n'a de sens que
+    juste apres une perte — c'est la, et seulement la, que remettre plus gros
+    cesse d'etre un choix de dimensionnement pour devenir un rattrapage.
+
+    N'utilise que des trades DEJA CLOTURES : rien ici ne suppose de connaitre
+    la suite du cours.
+    """
+    if not history or history[-1].is_win:
+        return None
+    habituel = usual_risk(history)
+    if habituel is None or habituel <= 0 or risk_amount <= 0:
+        return None
+    return risk_amount / habituel
 
 
 @dataclass(frozen=True, slots=True)

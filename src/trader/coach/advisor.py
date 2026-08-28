@@ -21,7 +21,10 @@ from trader.coach.curriculum import (
     MAX_OPEN_RISK_PCT,
     MAX_RISK_PCT,
     MIN_PLANNED_R,
+    REVENGE_MULTIPLE,
     break_even_rate,
+    revenge_multiple,
+    usual_risk,
 )
 from trader.coach.quotes import Quote
 
@@ -332,6 +335,59 @@ def review_plan(
                     f"Leurs stops sont passés au-dessus de leur prix de revient : tous "
                     f"touchés, elles rapporteraient encore {-deja_engage:,.2f} EUR. Seul "
                     f"ce trade-ci met du capital en jeu ({plan.risk_amount:,.2f} EUR).",
+                )
+            )
+
+    # Rien de ce qui precede ne regarde l'ORDRE des trades, et c'est pourtant la
+    # que se cache la faute qui vide les comptes le plus vite : remettre plus
+    # gros juste apres une perte, pour se refaire. Un tel trade peut respecter
+    # chaque limite prise separement — sa taille n'est excessive que par rapport
+    # a l'habitude de celui qui la prend, et seulement a cet instant-la.
+    multiple = revenge_multiple(state.history, plan.risk_amount)
+    if multiple is not None:
+        habituel = usual_risk(state.history)
+        perdu = abs(state.history[-1].pnl)
+        if multiple >= REVENGE_MULTIPLE:
+            advices.append(
+                Advice(
+                    Severity.WARNING,
+                    f"Mise {multiple:.1f} fois plus grosse que d'habitude, après une perte",
+                    f"Votre dernier trade ({state.history[-1].symbol}) a perdu "
+                    f"{perdu:,.2f} EUR, et celui-ci risque {plan.risk_amount:,.2f} EUR "
+                    f"quand vous jouez d'ordinaire {habituel:,.2f}. Le marché ne sait "
+                    "pas que vous venez de perdre : cette perte ne rend pas la hausse "
+                    "plus probable ici, elle rend seulement la mise plus grosse au "
+                    "moment où l'on juge le plus mal. Reprendre la taille habituelle "
+                    "ne coûte rien — la même occasion se représentera.",
+                )
+            )
+        elif multiple <= 1.0 / REVENGE_MULTIPLE:
+            # Reduire n'est pas une faute — le compte ne peut pas en mourir — mais
+            # ce n'est pas non plus la decision annoncee : la mise a suivi le
+            # dernier resultat, dans l'autre sens. Le dire evite de feliciter
+            # comme "discipline" ce qui est le meme reflexe en miroir.
+            advices.append(
+                Advice(
+                    Severity.INFO,
+                    f"Mise divisée par {1.0 / multiple:.1f} après une perte",
+                    f"Le trade précédent a perdu {perdu:,.2f} EUR et celui-ci ne risque "
+                    f"que {plan.risk_amount:,.2f} EUR contre {habituel:,.2f} "
+                    "d'habitude. Rien de dangereux — mais c'est encore le dernier "
+                    "résultat qui décide de la mise, en sens inverse. Une taille "
+                    "réduite exprès, et pour de bon, vaut mieux qu'une taille qui "
+                    "monte et descend au rythme des trades précédents.",
+                )
+            )
+        else:
+            advices.append(
+                Advice(
+                    Severity.GOOD,
+                    "Taille tenue après une perte",
+                    f"Le trade précédent a perdu {perdu:,.2f} EUR et vous ne changez pas "
+                    f"de mise ({plan.risk_amount:,.2f} EUR contre {habituel:,.2f} "
+                    "d'habitude). C'est exactement ce qui sépare un praticien d'un "
+                    "joueur : la taille se décide sur le compte, jamais sur le dernier "
+                    "résultat.",
                 )
             )
 
