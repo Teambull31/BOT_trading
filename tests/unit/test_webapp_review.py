@@ -1,9 +1,10 @@
-"""Contrat de `/api/review` avec l'interface.
+"""Contrat de `/api/review` et `/api/suggest-size` avec l'interface.
 
 L'interface affiche le stop REELLEMENT en vigueur et le rapport gain/perte au
 moment ou l'utilisateur decide. Ces deux chiffres viennent du serveur ; s'ils
 disparaissent du corps de la reponse, l'ecran de decision ment en silence,
-sans qu'aucun test Python ne s'en apercoive. D'ou ces verifications-la.
+sans qu'aucun test Python ne s'en apercoive. `/api/suggest-size` propose de
+meme la quantite ET l'objectif, deduits du seul stop. D'ou ces verifications-la.
 
 Aucun acces reseau : les cotations sont remplacees, une suite qui depend de
 l'ouverture des marches ne dit plus rien le week-end.
@@ -15,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trader.coach.account import PaperAccount
+from trader.coach.curriculum import MIN_PLANNED_R
 from trader.coach.quotes import Quote
 from trader.webapp import server as webapp
 
@@ -67,3 +69,23 @@ def test_review_distinguishes_a_null_ratio_from_an_absent_objective(client):
     """Objectif pose au prix d'entree : le rapport vaut 0, il n'est pas absent."""
     assert _review(client, stop=95.0, target=100.0)["reward_risk"] == 0.0
     assert _review(client, stop=95.0)["reward_risk"] is None
+
+
+def test_suggest_size_also_proposes_the_objective(client):
+    """La quantite et l'objectif se deduisent du meme stop : ils voyagent ensemble."""
+    reponse = client.post(
+        "/api/suggest-size", json={"symbol": "AAA", "stop": 95.0, "risk_pct": 1.0}
+    )
+    assert reponse.status_code == 200, reponse.text
+    corps = reponse.json()
+    # Cotation figee a 100.0, stop a 95.0 : 5.0 de perte acceptee par titre.
+    assert corps["suggested_target"] == pytest.approx(100.0 + corps["suggested_target_ratio"] * 5.0)
+    assert corps["suggested_target_ratio"] == pytest.approx(MIN_PLANNED_R)
+
+
+def test_suggest_size_omits_the_objective_when_the_stop_is_above_the_price(client):
+    reponse = client.post(
+        "/api/suggest-size", json={"symbol": "AAA", "stop": 105.0, "risk_pct": 1.0}
+    )
+    assert reponse.status_code == 200, reponse.text
+    assert reponse.json()["suggested_target"] is None

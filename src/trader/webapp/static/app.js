@@ -420,7 +420,17 @@ async function calcSize() {
       body: JSON.stringify({ symbol, stop, risk_pct: riskPct }),
     });
     $('t-shares').value = r.shares.toFixed(4);
-    $('price-hint').textContent = `${r.symbol} à ${euro(r.price)} — ${r.shares.toFixed(4)} titres = ${euro(r.notional)} € investis, ${euro(r.risk_amount)} € risqués (${riskPct} %)`;
+    let hint = `${r.symbol} à ${euro(r.price)} — ${r.shares.toFixed(4)} titres = ${euro(r.notional)} € investis, ${euro(r.risk_amount)} € risqués (${riskPct} %)`;
+    // L'objectif se deduit du stop, comme la quantite. On le propose sans jamais
+    // ecraser une valeur saisie : la cible reste la decision de l'utilisateur.
+    if (r.suggested_target !== null && r.suggested_target !== undefined) {
+      if (!$('t-target').value) $('t-target').value = r.suggested_target.toFixed(2);
+      // Formulation deliberement non predictive : rien ici ne dit que le cours
+      // atteindra ce niveau, seulement ce qu'il faut viser pour que le risque
+      // deja accepte ait une contrepartie suffisante.
+      hint += `. Pour viser ${r.suggested_target_ratio.toFixed(1)} fois cette perte, l'objectif se pose à ${euro(r.suggested_target)} € — c'est la contrepartie à demander, pas une prévision`;
+    }
+    $('price-hint').textContent = hint;
   } catch (error) {
     $('trade-error').textContent = error.message;
   }

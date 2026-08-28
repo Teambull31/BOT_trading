@@ -29,7 +29,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from trader.coach.account import ClosedTrade, InsufficientFunds, PaperAccount
-from trader.coach.advisor import TradePlan, review_plan, suggest_size
+from trader.coach.advisor import (
+    TradePlan,
+    review_plan,
+    suggest_size,
+    suggest_target,
+)
 from trader.coach.curriculum import MIN_PLANNED_R, evaluate_progress, planned_ratio
 from trader.coach.debrief import debrief_trade, recurring_patterns
 from trader.coach.quotes import QuoteError, fetch_quote, fetch_quotes
@@ -306,6 +311,9 @@ def create_app(
         prices = current_prices()
         equity = account.equity(prices) or account.state.total_deposited
         shares = suggest_size(equity, quote.price, request.stop, request.risk_pct)
+        # L'objectif voyage avec la quantite : les deux se deduisent du meme
+        # stop, et l'utilisateur les saisit dans la meme foulee.
+        target = suggest_target(quote.price, request.stop)
         return {
             "symbol": quote.symbol,
             "price": round(quote.price, 4),
@@ -313,6 +321,8 @@ def create_app(
             "notional": round(shares * quote.price, 2),
             "risk_amount": round(shares * (quote.price - request.stop), 2),
             "equity": round(equity, 2),
+            "suggested_target": None if target is None else round(target, 2),
+            "suggested_target_ratio": MIN_PLANNED_R,
         }
 
     @app.post("/api/review")

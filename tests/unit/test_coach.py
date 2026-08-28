@@ -19,7 +19,13 @@ from trader.coach.account import (
     InsufficientFunds,
     PaperAccount,
 )
-from trader.coach.advisor import Severity, TradePlan, review_plan, suggest_size
+from trader.coach.advisor import (
+    Severity,
+    TradePlan,
+    review_plan,
+    suggest_size,
+    suggest_target,
+)
 from trader.coach.curriculum import (
     LEVELS,
     MIN_PLANNED_R,
@@ -312,6 +318,27 @@ def test_suggest_size_matches_the_requested_risk():
 
 def test_suggest_size_is_zero_when_stop_is_above_price():
     assert suggest_size(1000.0, 100.0, 105.0) == 0.0
+
+
+def test_suggest_target_places_the_objective_at_the_curriculum_ratio():
+    """L'objectif propose est le seuil du palier traduit en prix."""
+    # 100 - 95 = 5 de perte acceptee ; 1.5 fois cette perte porte la cible a 107.5.
+    cible = suggest_target(price=100.0, stop=95.0)
+    assert cible == pytest.approx(100.0 + MIN_PLANNED_R * 5.0)
+
+    plan = TradePlan(symbol="AAA", shares=1.0, price=100.0, stop=95.0, target=cible)
+    assert plan.reward_risk == pytest.approx(MIN_PLANNED_R)
+
+
+def test_suggest_target_honours_an_explicit_ratio():
+    assert suggest_target(100.0, 90.0, ratio=3.0) == pytest.approx(130.0)
+
+
+def test_suggest_target_is_absent_without_a_planned_loss():
+    """Stop au-dessus (ou au niveau) du prix : aucune perte dont l'objectif soit un multiple."""
+    assert suggest_target(100.0, 105.0) is None
+    assert suggest_target(100.0, 100.0) is None
+    assert suggest_target(0.0, -1.0) is None
 
 
 def test_review_blocks_an_oversized_position(account):

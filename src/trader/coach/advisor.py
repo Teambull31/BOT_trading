@@ -154,6 +154,26 @@ def suggest_size(equity: float, price: float, stop: float, risk_pct: float = 1.0
     return max(0.0, equity * risk_pct / 100.0 / distance)
 
 
+def suggest_target(price: float, stop: float, ratio: float = MIN_PLANNED_R) -> float | None:
+    """Objectif qui vise `ratio` fois la perte acceptée au stop.
+
+    Le parcours note l'utilisateur sur cette asymétrie sans jamais lui dire à
+    quel PRIX elle correspond : le seuil restait une note, pas une consigne.
+    Cette fonction le traduit en un nombre qu'il peut saisir — ou refuser en
+    connaissance de cause.
+
+    Ce n'est pas une prévision : rien ici ne dit que le cours ATTEINDRA ce
+    niveau. C'est la contrepartie qu'il faut viser pour que le risque déjà
+    accepté ait un sens, et elle se déduit du seul stop.
+
+    `None` quand le stop est au-dessus du prix : il n'y a alors pas de perte
+    planifiée dont l'objectif serait un multiple.
+    """
+    if price <= 0 or stop >= price:
+        return None
+    return price + ratio * (price - stop)
+
+
 def review_plan(
     plan: TradePlan,
     account: PaperAccount,
