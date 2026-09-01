@@ -118,6 +118,16 @@ function renderStats(p) {
       klass: locked ? 'pos' : over ? 'neg' : '',
     });
   }
+  // Un ordre conditionnel promet une somme sans l'avoir encore dépensée : le
+  // liquide affiché doit être celui qu'on peut RÉELLEMENT engager, pas le solde
+  // brut qui laisse croire à une marge déjà réservée ailleurs.
+  if (p.reserved_cash > 0) {
+    rows.push({
+      label: 'Réservé par des ordres',
+      value: euro(p.reserved_cash) + ' €',
+      sub: `${euro(p.available_cash)} € encore disponibles`,
+    });
+  }
   if (p.closed_trades >= 3) {
     rows.push({
       label: 'Réussite',
@@ -422,6 +432,88 @@ function renderTargets(targets) {
     .join('');
 }
 
+/* Ordres conditionnels en attente : « acheter pour X € si le cours atteint Y ».
+   Le budget est déjà réservé côté serveur ; tant que l'ordre n'est pas exécuté,
+   l'annuler le libère intégralement. */
+function renderOrders(orders) {
+  $('count-orders').textContent = orders.length || '';
+  if (!orders.length) {
+    $('orders-list').innerHTML =
+      '<div class="card empty">Aucun ordre en attente.<br>Cochez <strong>Ordre conditionnel</strong> dans l\'onglet <strong>Trader</strong> pour en préparer un.</div>';
+    return;
+  }
+  $('orders-list').innerHTML = orders
+    .map((o) => {
+      const sens = o.direction === 'rise' ? 'monte à' : 'descend à';
+      const taille = o.budget != null ? euro(o.budget) + ' €' : (+o.shares).toFixed(4) + ' titres';
+      const ecart = o.live && o.price ? ((o.price - o.trigger) / o.trigger) * 100 : null;
+      return `<div class="order">
+        <div class="order-head">
+          <div>
+            <div class="pos-sym">${o.symbol}</div>
+            <div class="muted small">acheter ${taille} quand le cours ${sens} ${euro(o.trigger)}</div>
+          </div>
+          <div class="muted small" style="text-align:right">
+            ${o.live ? 'cours ' + euro(o.price) + ' €' : 'cours indisponible'}
+            ${ecart != null ? `<div>${ecart >= 0 ? '+' : ''}${ecart.toFixed(2)} % du déclencheur</div>` : ''}
+          </div>
+        </div>
+        <div class="pos-grid">
+          <div><div class="pg-label">Stop</div><div class="pg-value">${euro(o.stop)}</div></div>
+          <div><div class="pg-label">Objectif</div><div class="pg-value">${o.target ? euro(o.target) : '—'}</div></div>
+          <div><div class="pg-label">Suiveur</div><div class="pg-value">${o.trailing_pct ? o.trailing_pct.toFixed(1) + ' %' : '—'}</div></div>
+          <div><div class="pg-label">Réservé</div><div class="pg-value">${euro(o.reserved)} €</div></div>
+        </div>
+        ${o.rationale ? `<div class="muted small" style="margin-bottom:12px">« ${o.rationale} »</div>` : ''}
+        ${o.expires_at ? `<div class="muted small" style="margin-bottom:12px">expire le ${o.expires_at.slice(0, 10)}</div>` : ''}
+        <div class="pos-actions">
+          <button class="ghost" onclick="cancelOrder('${o.id}')">Annuler l'ordre</button>
+        </div>
+      </div>`;
+    })
+    .join('');
+}
+
+/* Ce qui vient d'arriver aux ordres depuis le dernier rafraîchissement :
+   exécuté (une position est née), annulé (fonds devenus insuffisants au
+   déclenchement) ou expiré. Affiché en bandeau, comme les objectifs atteints. */
+function renderOrderEvents(events) {
+  const box = $('orders-banner');
+  if (!events?.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = events
+    .map((e) => {
+      const titre =
+        e.status === 'exécuté'
+          ? `Ordre exécuté — ${e.symbol}`
+          : e.status === 'expiré'
+          ? `Ordre expiré — ${e.symbol}`
+          : `Ordre non exécuté — ${e.symbol}`;
+      const detail =
+        e.status === 'exécuté'
+          ? `${e.detail} — entrée à ${euro(e.fill)} € pour ${(+e.shares).toFixed(4)} titres. La position est dans l'onglet Positions.`
+          : e.detail;
+      return `<div class="target-row">
+        <div><strong>${titre}</strong></div>
+        <div class="muted small">${detail}</div>
+      </div>`;
+    })
+    .join('');
+}
+
+window.cancelOrder = async (id) => {
+  try {
+    await api('/api/order/' + id, { method: 'DELETE' });
+    await refresh();
+  } catch (error) {
+    alert(error.message);
+  }
+};
+
 function showDebriefData(d, forced = false) {
   $('debrief-title').textContent = forced
     ? `Stop déclenché — ${d.symbol}`
@@ -554,6 +646,66 @@ async function confirmTrade() {
   }
 }
 
+/* Ordre conditionnel : on ne « prépare » rien à valider ensuite, on pose
+   directement l'ordre. Le serveur renvoie tout de même l'analyse au prix du
+   déclencheur — on la montre si elle signale un point sérieux, l'ordre restant
+   annulable tant qu'il n'est pas exécuté. */
+async function placeOrder() {
+  $('trade-error').textContent = '';
+  const symbol = $('t-symbol').value.trim().toUpperCase();
+  const trigger = parseFloat($('t-trigger').value);
+  const stop = parseFloat($('t-stop').value);
+  const budget = parseFloat($('t-budget').value) || null;
+  const shares = parseFloat($('t-shares').value) || null;
+  if (!symbol || !trigger || !stop) {
+    $('trade-error').textContent = 'Titre, déclencheur et stop sont nécessaires.';
+    return;
+  }
+  if (!budget === !shares) {
+    $('trade-error').textContent = 'Indiquez un budget en euros, ou une quantité — pas les deux.';
+    return;
+  }
+  const body = {
+    symbol,
+    trigger,
+    stop,
+    direction: $('t-cond-dir').value,
+    target: parseFloat($('t-target').value) || null,
+    trailing_pct: $('t-trailing-on').checked ? parseFloat($('t-trailing').value) || null : null,
+    rationale: $('t-rationale').value,
+  };
+  if (budget) body.budget = budget;
+  else body.shares = shares;
+  try {
+    const result = await api('/api/order', { method: 'POST', body: JSON.stringify(body) });
+    const review = result.review;
+    if (review && !review.can_proceed) {
+      const points = review.advices
+        .filter((a) => a.severity === 'bloquant' || a.severity === 'attention')
+        .map((a) => '• ' + a.title)
+        .join('\n');
+      alert(
+        "Ordre placé, mais l'analyse au prix du déclencheur signale :\n\n" +
+          points +
+          "\n\nVous pouvez l'annuler dans l'onglet Ordres tant qu'il n'est pas exécuté."
+      );
+    }
+    ['t-symbol', 't-stop', 't-shares', 't-target', 't-rationale', 't-trigger', 't-budget'].forEach(
+      (id) => ($(id).value = '')
+    );
+    $('t-cond-on').checked = false;
+    $('t-cond-row').classList.add('hidden');
+    $('t-trailing-on').checked = false;
+    $('t-trailing-row').classList.add('hidden');
+    $('review-btn').textContent = 'Analyser ce trade';
+    $('price-hint').textContent = '';
+    await refresh();
+    document.querySelector('[data-tab="ordres"]').click();
+  } catch (error) {
+    $('trade-error').textContent = error.message;
+  }
+}
+
 /* ------------------------------------------------------------------ cycle */
 
 async function refresh() {
@@ -573,6 +725,8 @@ async function refresh() {
   renderLevels(state.progress);
   renderPatterns(state.patterns);
   renderTargets(state.targets_reached);
+  renderOrders(state.pending || []);
+  renderOrderEvents(state.order_events);
   await renderHistory();
   queueDebriefs(state.stopped);
 }
@@ -668,8 +822,19 @@ $('t-trailing-on').addEventListener('change', (event) =>
   $('t-trailing-row').classList.toggle('hidden', !event.target.checked)
 );
 
+// Ordre conditionnel : le même bouton pose l'ordre au lieu d'ouvrir l'analyse,
+// et son libellé le dit — l'entrée n'est pas immédiate.
+$('t-cond-on').addEventListener('change', (event) => {
+  $('t-cond-row').classList.toggle('hidden', !event.target.checked);
+  $('review-btn').textContent = event.target.checked
+    ? "Placer l'ordre conditionnel"
+    : 'Analyser ce trade';
+});
+
 $('calc-size').addEventListener('click', calcSize);
-$('review-btn').addEventListener('click', reviewTrade);
+$('review-btn').addEventListener('click', () =>
+  $('t-cond-on').checked ? placeOrder() : reviewTrade()
+);
 $('confirm-btn').addEventListener('click', confirmTrade);
 $('cancel-btn').addEventListener('click', () => $('review-card').classList.add('hidden'));
 function closeDebrief() {

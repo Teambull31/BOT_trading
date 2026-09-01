@@ -64,6 +64,9 @@
   <!-- Objectifs de position atteints -->
   <section class="targets hidden" id="targets-banner"></section>
 
+  <!-- Ce qui vient d'arriver aux ordres conditionnels (exécuté, annulé, expiré) -->
+  <section class="targets hidden" id="orders-banner"></section>
+
   <!-- Objectif du moment -->
   <section class="card mission" id="mission">
     <div class="mission-head">
@@ -80,6 +83,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="trade">Trader</button>
     <button class="tab" data-tab="positions">Positions <span class="count" id="count-positions"></span></button>
+    <button class="tab" data-tab="ordres">Ordres <span class="count" id="count-orders"></span></button>
     <button class="tab" data-tab="parcours">Parcours</button>
     <button class="tab" data-tab="historique">Historique</button>
   </nav>
@@ -132,6 +136,30 @@
                    value="8" placeholder="ex. 8">
           </label>
 
+          <label class="check">
+            <input type="checkbox" id="t-cond-on">
+            <span>Ordre conditionnel — n'entrer que si le cours atteint un prix précis</span>
+          </label>
+          <div class="hidden" id="t-cond-row">
+            <label>Déclencheur
+              <div class="cond-trigger">
+                <select id="t-cond-dir">
+                  <option value="dip">quand le cours descend à</option>
+                  <option value="rise">quand le cours monte à</option>
+                </select>
+                <input type="number" id="t-trigger" step="0.01" placeholder="ex. 250.00">
+              </div>
+            </label>
+            <label>Budget à engager (€) <span class="muted small">(à la place de la quantité)</span>
+              <input type="number" id="t-budget" step="10" placeholder="ex. 200">
+            </label>
+            <p class="muted small">
+              L'ordre garde votre stop et votre objectif, et réserve le budget jusqu'à
+              son exécution ou son annulation. Rien ici ne prévoit que le cours
+              atteindra ce niveau&nbsp;: il fige seulement la décision.
+            </p>
+          </div>
+
           <label>Pourquoi ce trade&nbsp;?
             <input type="text" id="t-rationale" placeholder="Votre raison, en une ligne">
           </label>
@@ -157,6 +185,11 @@
   <!-- Onglet : positions ouvertes -->
   <section class="panel" id="tab-positions">
     <div id="positions-list"></div>
+  </section>
+
+  <!-- Onglet : ordres conditionnels en attente -->
+  <section class="panel" id="tab-ordres">
+    <div id="orders-list"></div>
   </section>
 
   <!-- Onglet : parcours -->

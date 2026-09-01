@@ -235,6 +235,23 @@ button:hover { filter: brightness(1.12); }
    visible qu'une alerte, sinon seul le danger s'apprend. */
 .alert-locked { color: var(--win); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 
+/* ------------------------------------------------------- ordres conditionnels */
+
+/* Reprend la carte des positions, avec un liseré : un ordre en attente n'est
+   pas encore une position, mais s'en rapproche. */
+.order {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius); padding: 18px; margin-bottom: 12px;
+}
+.order-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; margin-bottom: 12px;
+}
+.cond-trigger { display: flex; gap: 8px; }
+.cond-trigger select { flex: 1 1 auto; min-width: 0; }
+.cond-trigger input { flex: 0 0 130px; width: 130px; }
+
 /* ----------------------------------------------------------------- niveaux */
 
 .level {

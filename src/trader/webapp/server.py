@@ -95,6 +95,21 @@ class RestoreRequest(BaseModel):
     """Instantane complet du compte, tel que renvoye par `/api/snapshot`."""
 
 
+class OrderRequest(BaseModel):
+    """Ordre d'achat conditionnel : « acheter pour X EUR si le cours atteint Y »."""
+
+    symbol: str
+    trigger: float = Field(gt=0, description="Prix qui declenche l'achat")
+    stop: float = Field(gt=0)
+    direction: str | None = Field(default=None, description="« dip » (repli) ou « rise » (franchissement)")
+    budget: float | None = Field(default=None, gt=0, description="Montant en euros a engager")
+    shares: float | None = Field(default=None, gt=0, description="Quantite fixe, alternative au budget")
+    target: float | None = None
+    trailing_pct: float | None = Field(default=None, gt=0, lt=100)
+    rationale: str = ""
+    expires_in_days: int | None = Field(default=None, gt=0)
+
+
 ACCOUNT_HEADER = "X-Coach-Account"
 REVISION_HEADER = "X-Coach-Rev"
 ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
@@ -200,11 +215,20 @@ def create_app(
         return await call_next(request)
 
     def current_prices() -> dict[str, float]:
-        """Cours des seules positions detenues — pas de requete inutile."""
-        symbols = [position.symbol for position in account.state.positions]
+        """Cours des positions detenues ET des ordres en attente — rien de plus.
+
+        Un ordre conditionnel a besoin d'un cours pour savoir si son declencheur
+        est franchi ; sans cela il resterait en attente meme une fois le seuil
+        depasse.
+        """
+        symbols = {position.symbol for position in account.state.positions}
+        symbols |= {order.symbol for order in account.state.pending}
         if not symbols:
             return {}
-        return {symbol: quote.price for symbol, quote in fetch_quotes(symbols).items()}
+        return {
+            symbol: quote.price
+            for symbol, quote in fetch_quotes(sorted(symbols)).items()
+        }
 
     # ------------------------------------------------------------------ etat
 
@@ -220,6 +244,10 @@ def create_app(
         prices = current_prices()
         account.mark(prices)
         stopped = account.check_stops(prices)
+        # Les ordres conditionnels sont evalues ICI, au meme titre que les stops :
+        # un declencheur franchi doit se traduire par une entree au prochain
+        # rafraichissement, pas rester lettre morte.
+        order_events = account.check_pending(prices)
         targets = account.targets_reached(prices)
         progress = evaluate_progress(account.state)
         positions = []
@@ -256,9 +284,40 @@ def create_app(
         # La limite voyage avec la mesure : l'interface signale le depassement
         # sans avoir a redefinir de son cote un seuil qui vit dans le parcours.
         performance["open_risk_limit_pct"] = MAX_OPEN_RISK_PCT
+        # Ce qu'un ordre en attente immobilise : l'interface doit montrer le
+        # liquide REELLEMENT disponible, pas le solde brut qui laisse croire a
+        # une marge de manoeuvre deja promise ailleurs.
+        performance["available_cash"] = round(account.available_cash(), 2)
+        performance["reserved_cash"] = round(account.state.cash - account.available_cash(), 2)
+        pending = [
+            {
+                "id": order.id,
+                "symbol": order.symbol,
+                "direction": order.direction,
+                "trigger": round(order.trigger, 4),
+                "stop": round(order.stop, 4),
+                "budget": round(order.budget, 2) if order.budget is not None else None,
+                "shares": round(order.shares, 6) if order.shares is not None else None,
+                "target": round(order.target, 4) if order.target else None,
+                "trailing_pct": order.trailing_pct,
+                "rationale": order.rationale,
+                "created_at": order.created_at,
+                "expires_at": order.expires_at,
+                "price": round(prices.get(order.symbol, 0.0), 4),
+                "reserved": round(order.reserved(), 2),
+                "label": order.describe(),
+                "live": order.symbol in prices,
+            }
+            for order in account.state.pending
+        ]
         return {
             "performance": performance,
             "positions": positions,
+            # Ordres conditionnels encore en attente, et ce qui vient d'arriver a
+            # ceux qui ne le sont plus (executes, refuses faute de liquidites,
+            # expires) — l'interface l'annonce comme elle annonce un stop touche.
+            "pending": pending,
+            "order_events": order_events,
             "progress": progress.to_dict(),
             "patterns": [lesson.to_dict() for lesson in recurring_patterns(account.state)],
             "has_capital": account.state.total_deposited > 0,
@@ -384,6 +443,69 @@ def create_app(
             "stop": round(position.stop, 4),
             "trailing_pct": position.trailing_pct,
         }
+
+    @app.post("/api/order")
+    def post_order(request: OrderRequest) -> dict:
+        """Place un ordre d'achat conditionnel : entree au marche au declenchement.
+
+        Le meme crible qu'avant une ouverture immediate est renvoye (`review`),
+        calcule au prix du declencheur : l'utilisateur voit taille, risque et
+        concentration AVANT de laisser l'ordre vivre sa vie. Les points
+        reellement bloquants — stop au-dessus du declencheur, budget et quantite
+        tous deux fournis (ou aucun), liquidites deja promises — sont refuses ici.
+        """
+        try:
+            quote = fetch_quote(request.symbol)
+        except QuoteError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+        apercu_shares = request.shares
+        if apercu_shares is None and request.budget is not None:
+            apercu_shares = account.shares_for_budget(request.budget, request.trigger)
+        review = None
+        if apercu_shares:
+            plan = TradePlan(
+                symbol=quote.symbol,
+                shares=apercu_shares,
+                price=request.trigger,
+                stop=request.stop,
+                target=request.target,
+                trailing_pct=request.trailing_pct,
+            )
+            review = review_plan(plan, account, None, current_prices()).to_dict()
+
+        try:
+            order = account.place_order(
+                quote.symbol,
+                request.trigger,
+                request.stop,
+                quote.price,
+                direction=request.direction,
+                budget=request.budget,
+                shares=request.shares,
+                target=request.target,
+                rationale=request.rationale,
+                trailing_pct=request.trailing_pct,
+                expires_in_days=request.expires_in_days,
+            )
+        except (InsufficientFunds, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "ok": True,
+            "order_id": order.id,
+            "direction": order.direction,
+            "label": order.describe(),
+            "review": review,
+        }
+
+    @app.delete("/api/order/{order_id}")
+    def delete_order(order_id: str) -> dict:
+        """Annule un ordre en attente et libere la reserve qu'il tenait."""
+        try:
+            order = account.cancel_order(order_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"ok": True, "order_id": order.id}
 
     @app.post("/api/stop")
     def post_stop(request: StopRequest) -> dict:

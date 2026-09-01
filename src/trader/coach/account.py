@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from trader.logging_setup import get_logger
@@ -211,6 +211,72 @@ class ClosedTrade:
 
 
 @dataclass(slots=True)
+class PendingOrder:
+    """Ordre d'achat conditionnel : entre au marche quand le cours atteint un seuil.
+
+    Utilite pedagogique : « acheter pour 200 EUR si l'action descend a 250 » est
+    la premiere brique d'un plan pense a froid plutot que sous le coup d'un
+    mouvement. L'ordre porte deja son stop — comme toute entree du parcours, il
+    est OBLIGATOIRE et strictement sous le declencheur.
+
+    Le declencheur ne prevoit rien : rien ici ne dit que le cours atteindra ce
+    niveau. Il fige seulement la decision (prix d'entree vise, taille, stop) pour
+    qu'elle ne soit pas reprise dans l'euphorie ou la panique.
+
+    `direction` vaut « dip » quand le declencheur est SOUS le cours du moment
+    (acheter sur repli) et « rise » quand il est AU-DESSUS (acheter sur
+    franchissement). Il est deduit une fois, a la creation, et fige : c'est lui
+    qui dit dans quel sens le cours doit franchir le seuil pour declencher.
+
+    L'un de `budget` (montant en EUR a engager) ou `shares` (quantite fixe) est
+    renseigne, jamais les deux. Avec un budget, la quantite se calcule au
+    declenchement, sur le cours reellement observe.
+    """
+
+    id: str
+    symbol: str
+    direction: str
+    trigger: float
+    stop: float
+    created_at: str
+    budget: float | None = None
+    shares: float | None = None
+    target: float | None = None
+    trailing_pct: float | None = None
+    rationale: str = ""
+    expires_at: str | None = None
+    """Date ISO au-dela de laquelle l'ordre est abandonne. None = valable jusqu'a annulation."""
+
+    def reserved(self) -> float:
+        """Liquidites que l'ordre immobilise tant qu'il n'est ni execute ni annule.
+
+        Un ordre en attente n'a encore rien depense, mais la somme ne doit pas
+        pouvoir servir deux fois : sans cette reserve, deux ordres et un achat au
+        marche pourraient engager trois fois le meme argent, et l'un des trois
+        echouerait au pire moment. Estimation volontairement large (cours au
+        declencheur + ecart + frais) : mieux vaut bloquer un peu trop que
+        promettre un achat que le compte ne pourra pas honorer.
+        """
+        if self.budget is not None:
+            return self.budget
+        fill = self.trigger * (1.0 + SLIPPAGE_PCT / 100.0)
+        notional = (self.shares or 0.0) * fill
+        return notional + PaperAccount.costs_for(notional)
+
+    def matches(self, price: float) -> bool:
+        """Le cours observe franchit-il le declencheur dans le sens attendu ?"""
+        if self.direction == "rise":
+            return price >= self.trigger
+        return price <= self.trigger
+
+    def describe(self) -> str:
+        """Phrase courte pour les journaux et l'interface."""
+        montant = f"{self.budget:,.0f} EUR" if self.budget is not None else f"{self.shares:g} titres"
+        sens = "monte à" if self.direction == "rise" else "descend à"
+        return f"acheter {montant} de {self.symbol} si le cours {sens} {self.trigger:,.2f}"
+
+
+@dataclass(slots=True)
 class AccountState:
     """État complet du compte d'entrainement."""
 
@@ -218,6 +284,7 @@ class AccountState:
     deposits: list[Deposit] = field(default_factory=list)
     positions: list[Position] = field(default_factory=list)
     history: list[ClosedTrade] = field(default_factory=list)
+    pending: list[PendingOrder] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     rev: int = 0
     """Numero de revision, incremente a chaque ecriture.
@@ -257,6 +324,7 @@ class PaperAccount:
             deposits=[Deposit(**item) for item in raw.get("deposits", [])],
             positions=[Position(**item) for item in raw.get("positions", [])],
             history=[ClosedTrade(**item) for item in raw.get("history", [])],
+            pending=[PendingOrder(**item) for item in raw.get("pending", [])],
             created_at=raw.get("created_at", _now()),
             rev=int(raw.get("rev", 0)),
         )
@@ -273,6 +341,7 @@ class PaperAccount:
             "deposits": [asdict(item) for item in self.state.deposits],
             "positions": [asdict(item) for item in self.state.positions],
             "history": [asdict(item) for item in self.state.history],
+            "pending": [asdict(item) for item in self.state.pending],
             "created_at": self.state.created_at,
             "rev": self.state.rev,
         }
@@ -385,6 +454,204 @@ class PaperAccount:
         self.save()
         log.info("position_opened", symbol=symbol, shares=shares, price=fill, stop=stop)
         return position
+
+    # ------------------------------------------------------ ordres conditionnels
+
+    @staticmethod
+    def shares_for_budget(budget: float, price: float) -> float:
+        """Quantité telle que la dépense totale (titres + écart + frais) tienne dans `budget`."""
+        if budget <= 0 or price <= 0:
+            return 0.0
+        fill = price * (1.0 + SLIPPAGE_PCT / 100.0)
+        return max(0.0, budget / (fill * (1.0 + COMMISSION_PCT / 100.0)))
+
+    def available_cash(self) -> float:
+        """Liquidites libres : le solde moins ce que les ordres en attente reservent.
+
+        C'est ce chiffre, et non `state.cash`, qui plafonne un nouvel achat ou un
+        nouvel ordre : l'argent deja promis a un ordre conditionnel n'est plus
+        disponible, meme s'il n'a pas encore quitte le compte.
+        """
+        return self.state.cash - sum(order.reserved() for order in self.state.pending)
+
+    def place_order(
+        self,
+        symbol: str,
+        trigger: float,
+        stop: float,
+        current_price: float,
+        *,
+        direction: str | None = None,
+        budget: float | None = None,
+        shares: float | None = None,
+        target: float | None = None,
+        rationale: str = "",
+        trailing_pct: float | None = None,
+        expires_in_days: int | None = None,
+    ) -> PendingOrder:
+        """Enregistre un ordre d'achat conditionnel.
+
+        `direction` dit dans quel sens le cours doit franchir le seuil : « dip »
+        pour acheter sur repli (le declencheur est sous le cours), « rise » pour
+        acheter sur franchissement (au-dessus). Laisse `None` et il est deduit de
+        `current_price` — mais l'interface l'envoie toujours, car deviner le sens
+        a partir du seul cours se trompe des que celui-ci a deja depasse le seuil.
+
+        `current_price` sert aussi a refuser un ordre deja franchi : « acheter si
+        ca descend a 250 » alors que le cours est deja a 240 n'a plus rien de
+        conditionnel — l'utilisateur doit choisir un achat au marche ou un
+        declencheur de l'autre cote, en connaissance de cause.
+
+        Le stop est OBLIGATOIRE et sous le declencheur, comme pour toute entree du
+        parcours : un ordre sans niveau de sortie prevu n'est pas un plan.
+        """
+        symbol = symbol.upper().strip()
+        if (budget is None) == (shares is None):
+            raise ValueError("précisez un budget en euros OU une quantité, pas les deux")
+        if budget is not None and budget <= 0:
+            raise ValueError("le budget doit être positif")
+        if shares is not None and shares <= 0:
+            raise ValueError("la quantité doit être positive")
+        if trigger <= 0 or current_price <= 0:
+            raise ValueError("prix invalide")
+        if stop <= 0 or stop >= trigger:
+            raise ValueError("le stop doit être strictement sous le déclencheur")
+        if trailing_pct is not None and not 0.0 < trailing_pct < 100.0:
+            raise ValueError("le stop suiveur doit être une distance entre 0 et 100 %")
+
+        if direction is None:
+            direction = "rise" if trigger > current_price else "dip"
+        if direction not in ("dip", "rise"):
+            raise ValueError("le sens doit être « dip » (repli) ou « rise » (franchissement)")
+        if direction == "dip" and current_price <= trigger:
+            raise ValueError(
+                f"le cours est déjà à {current_price:,.2f}, à ou sous votre déclencheur "
+                f"de {trigger:,.2f} : passez un ordre au marché, ou visez plus bas"
+            )
+        if direction == "rise" and current_price >= trigger:
+            raise ValueError(
+                f"le cours est déjà à {current_price:,.2f}, à ou au-dessus de votre "
+                f"déclencheur de {trigger:,.2f} : passez un ordre au marché, ou visez plus haut"
+            )
+
+        order = PendingOrder(
+            id=_new_id(),
+            symbol=symbol,
+            direction=direction,
+            trigger=float(trigger),
+            stop=float(stop),
+            created_at=_now(),
+            budget=float(budget) if budget is not None else None,
+            shares=float(shares) if shares is not None else None,
+            target=float(target) if target else None,
+            trailing_pct=float(trailing_pct) if trailing_pct else None,
+            rationale=rationale,
+            expires_at=(
+                None
+                if not expires_in_days
+                else (datetime.now(UTC) + timedelta(days=int(expires_in_days))).isoformat(
+                    timespec="seconds"
+                )
+            ),
+        )
+        if order.reserved() > self.available_cash() + 1e-9:
+            raise InsufficientFunds(
+                f"cet ordre réserve {order.reserved():,.2f} EUR, il n'en reste que "
+                f"{self.available_cash():,.2f} de libres"
+            )
+        self.state.pending.append(order)
+        self.save()
+        log.info("order_placed", symbol=symbol, trigger=trigger, direction=direction)
+        return order
+
+    def find_order(self, order_id: str) -> PendingOrder:
+        for order in self.state.pending:
+            if order.id == order_id:
+                return order
+        raise KeyError(f"ordre introuvable : {order_id}")
+
+    def cancel_order(self, order_id: str) -> PendingOrder:
+        """Annule un ordre en attente et libère la réserve qu'il tenait."""
+        order = self.find_order(order_id)
+        self.state.pending = [o for o in self.state.pending if o.id != order_id]
+        self.save()
+        log.info("order_cancelled", symbol=order.symbol, trigger=order.trigger)
+        return order
+
+    def check_pending(self, prices: dict[str, float]) -> list[dict]:
+        """Exécute ou périme les ordres conditionnels, au cours REELLEMENT observé.
+
+        Comme `check_stops`, l'entrée se fait au cours constaté, jamais au niveau
+        théorique du déclencheur : dans la réalité on n'est pas servi au prix
+        exact, et un écart brutal fait entrer plus loin. Un ordre dont les
+        liquidités ne suffisent plus au moment du déclenchement est abandonné
+        avec sa raison — l'utilisateur doit savoir pourquoi son achat n'a pas eu
+        lieu, pas le déduire de l'état du compte.
+        """
+        events: list[dict] = []
+        now = datetime.now(UTC)
+        for order in list(self.state.pending):
+            price = prices.get(order.symbol)
+            if price is None:
+                continue
+            if order.expires_at and now > datetime.fromisoformat(order.expires_at):
+                self.state.pending = [o for o in self.state.pending if o.id != order.id]
+                self.save()
+                events.append(
+                    {
+                        "status": "expiré",
+                        "order_id": order.id,
+                        "symbol": order.symbol,
+                        "detail": order.describe(),
+                    }
+                )
+                continue
+            if not order.matches(price):
+                continue
+            # Le declencheur est franchi : l'ordre quitte l'attente quoi qu'il
+            # arrive ensuite, execute ou refuse.
+            self.state.pending = [o for o in self.state.pending if o.id != order.id]
+            shares = (
+                order.shares
+                if order.shares is not None
+                else self.shares_for_budget(order.budget or 0.0, price)
+            )
+            note = (order.rationale + " [ordre conditionnel]").strip()
+            try:
+                position = self.open_position(
+                    order.symbol,
+                    shares,
+                    price,
+                    order.stop,
+                    target=order.target,
+                    rationale=note,
+                    trailing_pct=order.trailing_pct,
+                )
+            except (InsufficientFunds, ValueError) as error:
+                self.save()
+                events.append(
+                    {
+                        "status": "annulé",
+                        "order_id": order.id,
+                        "symbol": order.symbol,
+                        "detail": str(error),
+                    }
+                )
+                log.warning("order_fill_failed", symbol=order.symbol, error=str(error))
+                continue
+            events.append(
+                {
+                    "status": "exécuté",
+                    "order_id": order.id,
+                    "symbol": order.symbol,
+                    "position_id": position.id,
+                    "fill": round(position.entry_price, 4),
+                    "shares": round(position.shares, 6),
+                    "detail": order.describe(),
+                }
+            )
+            log.info("order_filled", symbol=order.symbol, fill=round(position.entry_price, 4))
+        return events
 
     def update_stop(self, position_id: str, stop: float) -> Position:
         """Deplace un stop, en tracant tout élargissement.
