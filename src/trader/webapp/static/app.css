@@ -176,7 +176,12 @@ h1, h2, h3 { letter-spacing: -0.014em; text-wrap: balance; }
 
 /* -------------------------------------------------------------- onboarding */
 
-.onboarding { display: grid; place-items: center; padding: var(--s-10) var(--s-5); }
+/* min-height : la carte flotte au centre de l'ecran plutot que collee en haut
+   avec un grand vide en dessous — c'est le premier ecran, il doit poser. */
+.onboarding {
+  display: grid; place-items: center;
+  min-height: 68vh; padding: var(--s-10) var(--s-5);
+}
 .onboarding-card { max-width: 560px; box-shadow: var(--shadow-md); }
 .onboarding-card h2 { margin-top: 0; font-size: 23px; }
 .amount-row { display: flex; gap: var(--s-2); flex-wrap: wrap; margin: var(--s-5) 0 var(--s-3); }
@@ -387,11 +392,18 @@ button:disabled:active { transform: none; }
 
 /* ------------------------------------------------------------------ conseils */
 
+/* flex + wrap plutot qu'une grille auto-fit : auto-fit etire les colonnes
+   occupees pour absorber la place libre, et six valeurs courtes finissaient
+   etalees sur toute la largeur de la carte. La, elles se groupent a gauche. */
 .review-metrics {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
+  display: flex; flex-wrap: wrap;
   gap: var(--s-2); margin-bottom: var(--s-4);
 }
-.rm { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 12px; }
+.rm {
+  flex: 0 1 auto; min-width: 128px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px;
+}
 .rm-label { font-size: 11.5px; color: var(--muted); }
 .rm-value { font-size: 17px; font-weight: 620; font-variant-numeric: tabular-nums; letter-spacing: -0.015em; }
 /* Le suiveur a remonte le stop au-dessus de celui saisi : ce n'est pas une
@@ -428,12 +440,14 @@ button:disabled:active { transform: none; }
   background: var(--surface-3); padding: 3px 9px; border-radius: var(--r-pill);
 }
 .pos-pnl { font-size: 19px; font-weight: 660; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
-/* Colonnes qui epousent leur contenu et se groupent a gauche : quatre valeurs
-   courtes n'ont pas a s'etaler sur toute la largeur de la carte. */
+/* Valeurs qui epousent leur contenu et se groupent a gauche : quelques nombres
+   courts n'ont pas a s'etaler sur toute la largeur de la carte. flex+wrap car
+   grid auto-fit etire les colonnes occupees pour absorber l'espace restant. */
 .pos-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, max-content));
+  display: flex; flex-wrap: wrap;
   gap: var(--s-4) var(--s-6); margin-bottom: var(--s-4);
 }
+.pos-grid > div { min-width: 92px; }
 .pg-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .pg-value { font-size: 14.5px; font-variant-numeric: tabular-nums; margin-top: 2px; }
 .stop-bar {
