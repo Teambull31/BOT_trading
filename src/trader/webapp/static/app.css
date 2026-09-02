@@ -140,7 +140,11 @@ body {
 .small { font-size: 13px; }
 .error { color: var(--loss); font-size: 14px; min-height: 20px; margin: 6px 0 0; }
 
-h1, h2, h3 { letter-spacing: -0.014em; }
+h1, h2, h3 { letter-spacing: -0.014em; text-wrap: balance; }
+
+/* Evite les lignes veuves d'un seul mot dans les libelles et les paragraphes. */
+.stat-sub, .stat-label, .pg-label, .rm-label, .advice-msg, .lesson-msg,
+.mission-why, .verdict, .level-why, .foot p { text-wrap: pretty; }
 
 /* ------------------------------------------------------------------ topbar */
 
@@ -198,6 +202,11 @@ main { max-width: 1180px; margin: 0 auto; padding: var(--s-6) var(--s-5) var(--s
    carte courte s'etire pour suivre la longue et laisse un grand vide. */
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); align-items: start; }
 @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+/* Le marche reste visible pendant qu'on remplit le formulaire, plus long : on
+   garde les prix sous les yeux au lieu de faire l'aller-retour en scrollant. */
+@media (min-width: 861px) {
+  .two-col > .card:first-child { position: sticky; top: 76px; }
+}
 
 /* ------------------------------------------------------------------- stats */
 
@@ -410,13 +419,16 @@ button:disabled:active { transform: none; }
 .position:hover, .order:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); }
 .pos-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); margin-bottom: var(--s-3); }
 .pos-sym {
-  font-size: 15px; font-weight: 680; letter-spacing: 0.01em;
-  background: var(--surface-3); padding: 3px 10px; border-radius: var(--r-pill);
+  display: inline-block; align-self: flex-start;
+  font-size: 13px; font-weight: 680; letter-spacing: 0.03em;
+  background: var(--surface-3); padding: 3px 9px; border-radius: var(--r-pill);
 }
-.pos-pnl { font-size: 19px; font-weight: 660; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.pos-pnl { font-size: 19px; font-weight: 660; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
+/* Colonnes qui epousent leur contenu et se groupent a gauche : quatre valeurs
+   courtes n'ont pas a s'etaler sur toute la largeur de la carte. */
 .pos-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
-  gap: var(--s-3); margin-bottom: var(--s-4);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, max-content));
+  gap: var(--s-4) var(--s-6); margin-bottom: var(--s-4);
 }
 .pg-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .pg-value { font-size: 14.5px; font-variant-numeric: tabular-nums; margin-top: 2px; }
