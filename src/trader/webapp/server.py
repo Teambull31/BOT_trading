@@ -18,13 +18,14 @@ Dans les deux cas : argent fictif, aucun ordre reel, aucun courtier.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from contextvars import ContextVar
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -624,9 +625,27 @@ def create_app(
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+        def _asset_tag(name: str) -> str:
+            """Empreinte courte du fichier : sert de cache-buster. L'URL de la
+            feuille de style ou du script change des que son contenu change, si
+            bien qu'apres un deploiement le navigateur ne peut pas resservir
+            l'ancienne version depuis son cache."""
+            try:
+                digest = hashlib.sha1((STATIC_DIR / name).read_bytes()).hexdigest()
+            except OSError:
+                return "0"
+            return digest[:8]
+
         @app.get("/")
-        def index() -> FileResponse:
-            return FileResponse(STATIC_DIR / "index.html")
+        def index() -> HTMLResponse:
+            html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            for asset in ("app.css", "app.js"):
+                html = html.replace(
+                    f"/static/{asset}", f"/static/{asset}?v={_asset_tag(asset)}"
+                )
+            # Le HTML lui-meme doit toujours etre reverifie, sinon il continue de
+            # pointer vers l'ancienne empreinte.
+            return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     return app
 

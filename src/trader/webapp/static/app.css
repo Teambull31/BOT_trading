@@ -194,7 +194,9 @@ main { max-width: 1180px; margin: 0 auto; padding: var(--s-6) var(--s-5) var(--s
   border-bottom: 1px solid var(--border);
 }
 
-.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
+/* align-items:start — chaque colonne garde sa hauteur propre ; sans quoi la
+   carte courte s'etire pour suivre la longue et laisse un grand vide. */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); align-items: start; }
 @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
 
 /* ------------------------------------------------------------------- stats */
