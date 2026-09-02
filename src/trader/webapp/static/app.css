@@ -223,6 +223,10 @@ main { max-width: 1180px; margin: 0 auto; padding: var(--s-6) var(--s-5) var(--s
 .stat-label {
   font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+  /* Deux lignes reservees : sans quoi un libelle qui passe a la ligne
+     ("Risque ouvert", "Reserve par des ordres") decale sa valeur vers le bas
+     et casse l'alignement des chiffres sur toute la rangee. */
+  line-height: 1.3; min-height: calc(2 * 11px * 1.3);
 }
 .stat-value {
   font-size: 23px; font-weight: 660; margin-top: 5px;
