@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
@@ -22,6 +22,8 @@ from trader.logging_setup import get_logger
 log = get_logger(__name__)
 
 QUOTE_URL = "https://api.nasdaq.com/api/quote/{symbol}/info"
+HISTORY_URL_DAILY = "https://api.nasdaq.com/api/quote/{symbol}/historical"
+HISTORY_URL_INTRADAY = "https://api.nasdaq.com/api/quote/{symbol}/chart"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -33,6 +35,14 @@ CACHE_SECONDS: float = 15.0
 """Duree de vie d'un cours en cache. Rafraichir plus vite ne sert à rien pour
 un entrainement sur des positions de plusieurs jours, et fait courir le risque
 d'un blocage cote fournisseur."""
+
+HISTORY_CACHE_SECONDS: float = 300.0
+"""Un historique de cloture quotidienne ne bouge qu'une fois par jour ; le
+garder cinq minutes suffit largement et epargne l'API."""
+
+HISTORY_PERIODS: dict[str, int] = {"1D": 1, "1M": 32, "3M": 95, "1Y": 375}
+"""Etiquette -> profondeur en jours calendaires. « 1D » est un cas a part :
+cours intra-seance, servi par un autre endpoint."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +99,44 @@ class QuoteError(RuntimeError):
     """Cours indisponible."""
 
 
+@dataclass(frozen=True, slots=True)
+class PriceHistory:
+    """Serie de cours d'un titre : la « courbe » que trace l'interface.
+
+    Volontairement minimaliste — une suite de (horodatage ISO, prix) triee du
+    plus ancien au plus recent — pour que le front n'ait qu'a la projeter. Les
+    bornes (premier, dernier, plus bas, plus haut) sont calculees ici : elles
+    servent a l'echelle du graphe et a l'etiquette de variation, autant ne pas
+    les recalculer cote navigateur.
+    """
+
+    symbol: str
+    period: str
+    points: list[tuple[str, float]]
+
+    def to_dict(self) -> dict:
+        prices = [price for _, price in self.points]
+        first = prices[0] if prices else None
+        last = prices[-1] if prices else None
+        change_pct = (
+            round((last / first - 1.0) * 100.0, 2)
+            if first and last is not None and len(prices) >= 2
+            else 0.0
+        )
+        return {
+            "symbol": self.symbol,
+            "period": self.period,
+            "points": [[stamp, round(price, 4)] for stamp, price in self.points],
+            "first": round(first, 4) if first is not None else None,
+            "last": round(last, 4) if last is not None else None,
+            "low": round(min(prices), 4) if prices else None,
+            "high": round(max(prices), 4) if prices else None,
+            "change_pct": change_pct,
+        }
+
+
 _cache: dict[str, tuple[float, Quote]] = {}
+_history_cache: dict[tuple[str, str], tuple[float, list[tuple[str, float]]]] = {}
 
 
 def _parse_price(raw: str | None) -> float:
@@ -190,6 +237,92 @@ def fetch_quotes(symbols: list[str], *, use_cache: bool = True) -> dict[str, Quo
     return quotes
 
 
+def fetch_history(symbol: str, period: str = "1M", *, use_cache: bool = True) -> PriceHistory:
+    """Recupere la courbe de cours d'un titre sur la periode demandee.
+
+    `period` vaut « 1D » (intra-seance), « 1M », « 3M » ou « 1Y » ; toute autre
+    valeur retombe sur « 1M ». Une periode absente ou une reponse vide leve
+    QuoteError, comme `fetch_quote` : l'interface sait deja afficher ce cas.
+    """
+    symbol = symbol.upper().strip()
+    period = period.upper().strip()
+    if period not in HISTORY_PERIODS:
+        period = "1M"
+    key = (symbol, period)
+    now = time.monotonic()
+    if use_cache and key in _history_cache:
+        stamped, points = _history_cache[key]
+        if now - stamped < HISTORY_CACHE_SECONDS:
+            return PriceHistory(symbol, period, points)
+
+    asset_class = "etf" if symbol in ETF_SYMBOLS else "stocks"
+    try:
+        if period == "1D":
+            points = _fetch_intraday(symbol, asset_class)
+        else:
+            points = _fetch_daily(symbol, asset_class, HISTORY_PERIODS[period])
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+        raise QuoteError(f"historique indisponible pour {symbol} : {error}") from error
+
+    if len(points) < 2:
+        raise QuoteError(f"historique trop court pour {symbol} ({period})")
+    _history_cache[key] = (now, points)
+    log.info("history_fetched", symbol=symbol, period=period, points=len(points))
+    return PriceHistory(symbol, period, points)
+
+
+def _fetch_daily(symbol: str, asset_class: str, days: int) -> list[tuple[str, float]]:
+    """Clotures quotidiennes via l'endpoint historique Nasdaq."""
+    end = date.today()
+    start = end - timedelta(days=days)
+    response = httpx.get(
+        HISTORY_URL_DAILY.format(symbol=symbol),
+        params={
+            "assetclass": asset_class,
+            "fromdate": start.isoformat(),
+            "todate": end.isoformat(),
+            "limit": 9999,
+        },
+        headers=HEADERS,
+        timeout=12.0,
+    )
+    response.raise_for_status()
+    rows = (((response.json() or {}).get("data") or {}).get("tradesTable") or {}).get("rows") or []
+    points: list[tuple[str, float]] = []
+    for row in rows:
+        price = _parse_price(row.get("close"))
+        if price != price:  # NaN : ligne incomplete, on la saute
+            continue
+        try:
+            stamp = datetime.strptime(row["date"], "%m/%d/%Y").date().isoformat()
+        except (KeyError, ValueError):
+            continue
+        points.append((stamp, price))
+    points.sort()
+    return points
+
+
+def _fetch_intraday(symbol: str, asset_class: str) -> list[tuple[str, float]]:
+    """Cours intra-seance via l'endpoint chart Nasdaq."""
+    response = httpx.get(
+        HISTORY_URL_INTRADAY.format(symbol=symbol),
+        params={"assetclass": asset_class},
+        headers=HEADERS,
+        timeout=12.0,
+    )
+    response.raise_for_status()
+    chart = ((response.json() or {}).get("data") or {}).get("chart") or []
+    points: list[tuple[str, float]] = []
+    for entry in chart:
+        marker = entry.get("z") or {}
+        price = _parse_price(marker.get("value") or marker.get("lastSalePrice"))
+        stamp = marker.get("dateTime") or marker.get("date") or ""
+        if price == price and stamp:
+            points.append((str(stamp), price))
+    return points
+
+
 def clear_cache() -> None:
-    """Vide le cache — utile aux tests et a un rafraichissement force."""
+    """Vide les caches — utile aux tests et a un rafraichissement force."""
     _cache.clear()
+    _history_cache.clear()

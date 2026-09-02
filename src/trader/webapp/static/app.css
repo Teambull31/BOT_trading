@@ -305,7 +305,7 @@ main { max-width: 1180px; margin: 0 auto; padding: var(--s-6) var(--s-5) var(--s
   border: 1px solid var(--border);
 }
 .wl-row {
-  display: grid; grid-template-columns: 54px 1fr auto; gap: var(--s-3); align-items: center;
+  display: grid; grid-template-columns: 52px minmax(0, 1fr) 72px auto; gap: var(--s-3); align-items: center;
   padding: 9px 12px; cursor: pointer;
   transition: background var(--dur) var(--ease);
 }
@@ -508,7 +508,7 @@ button:disabled:active { transform: none; }
 /* -------------------------------------------------------------- historique */
 
 .hist-row {
-  display: grid; grid-template-columns: 70px 1fr auto auto; gap: var(--s-3);
+  display: grid; grid-template-columns: 62px 58px minmax(0, 1fr) auto auto; gap: var(--s-3);
   align-items: center; padding: 12px 6px; border-bottom: 1px solid var(--border);
   cursor: pointer; border-radius: 6px;
   transition: background var(--dur) var(--ease);
@@ -620,6 +620,97 @@ button:disabled:active { transform: none; }
 
 .link-btn:hover { color: var(--accent-hover); }
 
+/* ---------------------------------------------------------- courbes de cours
+
+   SVG en ligne, aucune dependance : le trace est etire au conteneur
+   (preserveAspectRatio="none") et `vector-effect: non-scaling-stroke` garde un
+   trait d'epaisseur constante malgre l'etirement. Aucun texte dans le SVG —
+   il serait deforme ; les etiquettes sont en HTML autour. */
+
+.spark, .spark path, .spark line,
+.pchart path, .pchart line { vector-effect: non-scaling-stroke; }
+
+.spark { display: block; width: 100%; height: 26px; }
+.spark path { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; }
+.spark.up path { stroke: var(--win); }
+.spark.down path { stroke: var(--loss); }
+.spark-void { display: block; width: 100%; height: 26px; }
+
+.wl-spark { width: 100%; min-width: 0; }
+
+.pchart-box { position: relative; }
+.pchart {
+  display: block; width: 100%; height: var(--pch-h, 150px);
+  border-radius: var(--r-sm); background: var(--surface-3);
+}
+.pc-area { stroke: none; fill: var(--accent-soft); }
+.pc-line { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linejoin: round; }
+.pchart.up .pc-line { stroke: var(--win); }
+.pchart.up .pc-area { fill: var(--win-soft); }
+.pchart.down .pc-line { stroke: var(--loss); }
+.pchart.down .pc-area { fill: var(--loss-soft); }
+.pc-mark { stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.85; }
+.pc-stop { stroke: var(--loss); }
+.pc-target { stroke: var(--win); }
+.pc-entry { stroke: var(--muted); }
+.pc-trigger { stroke: var(--accent); }
+.pc-scale {
+  position: absolute; inset: 0 4px 0 auto;
+  display: flex; flex-direction: column; justify-content: space-between;
+  padding: 3px 0; pointer-events: none;
+  font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--faint);
+}
+.pc-scale span {
+  background: color-mix(in srgb, var(--surface-3) 82%, transparent);
+  padding: 0 4px; border-radius: 4px; align-self: flex-end;
+}
+.pchart-void {
+  display: grid; place-items: center; height: var(--pch-h, 150px);
+  border-radius: var(--r-sm); background: var(--surface-3);
+  color: var(--muted); font-size: 12.5px;
+}
+
+/* graphe du panneau « Preparer un trade » */
+.tchart {
+  margin: var(--s-3) 0 var(--s-1);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: var(--s-3); background: var(--surface-2);
+}
+.tchart-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s-2); margin-bottom: var(--s-2);
+}
+.tchart-title { font-size: 13px; font-weight: 620; }
+.tchart-title .pos { color: var(--win); }
+.tchart-title .neg { color: var(--loss); }
+.tchart-periods {
+  display: inline-flex; gap: 2px;
+  background: var(--surface-3); border-radius: var(--r-pill); padding: 2px;
+}
+.tchart-periods button {
+  border: 0; background: none; color: var(--muted);
+  font: inherit; font-size: 11.5px; font-weight: 560;
+  padding: 3px 10px; border-radius: var(--r-pill); cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.tchart-periods button:hover { color: var(--text); }
+.tchart-periods button.active { background: var(--accent); color: #fff; }
+.tchart-legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin-top: var(--s-2); }
+.pc-leg {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.pc-leg::before {
+  content: ""; width: 12px; border-top: 2px dashed currentColor;
+}
+.pc-leg.pc-stop { color: var(--loss); }
+.pc-leg.pc-target { color: var(--win); }
+.pc-leg.pc-trigger { color: var(--accent); }
+.pc-leg.pc-entry { color: var(--muted); }
+
+.pos-chart { margin: 2px 0 12px; --pch-h: 116px; }
+.hist-spark { width: 100%; }
+
 /* --------------------------------------------------------------- responsive */
 
 @media (max-width: 640px) {
@@ -635,6 +726,12 @@ button:disabled:active { transform: none; }
   .mission h2 { font-size: 18px; }
   .review-actions, .pos-actions { flex-direction: column; align-items: stretch; }
   .pos-actions input { width: 100%; }
+  /* Sur telephone la ligne du marche est deja serree : on retire la sparkline
+     et l'historique retrouve ses quatre colonnes. */
+  .wl-row { grid-template-columns: 52px minmax(0, 1fr) auto; }
+  .wl-spark { display: none; }
+  .hist-row { grid-template-columns: 60px minmax(0, 1fr) auto auto; }
+  .hist-spark { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

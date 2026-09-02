@@ -108,6 +108,22 @@
           </label>
           <div class="price-hint" id="price-hint"></div>
 
+          <!-- Courbe du titre saisi : le stop, l'objectif et le déclencheur s'y
+               reportent en pointillés au fur et à mesure de la saisie. -->
+          <div class="tchart hidden" id="t-chart">
+            <div class="tchart-head">
+              <span class="tchart-title" id="t-chart-title"></span>
+              <div class="tchart-periods" id="t-chart-periods">
+                <button type="button" data-p="1D">1J</button>
+                <button type="button" data-p="1M">1M</button>
+                <button type="button" data-p="3M">3M</button>
+                <button type="button" data-p="1Y">1A</button>
+              </div>
+            </div>
+            <div class="pchart-box" id="t-chart-body"></div>
+            <div class="tchart-legend" id="t-chart-legend"></div>
+          </div>
+
           <label>Stop — le prix où vous acceptez d'avoir tort
             <input type="number" id="t-stop" step="0.01" placeholder="ex. 880.00">
           </label>

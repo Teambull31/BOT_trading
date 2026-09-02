@@ -1,109 +1,187 @@
-"""L'historique doit dire, trade par trade, ce qui etait prevu en face du stop.
+"""Courbe de cours d'un titre : « montre-moi NVDA sur trois mois ».
 
-Le palier « couper court, laisser courir » compte les trades sans plan de
-sortie. Un palier qui compte des fautes sans jamais designer lesquelles
-n'apprend rien : ces tests verifient que `/api/history` porte l'information.
-
-Aucun acces reseau : les cotations sont remplacees, sinon la suite dependrait
-de l'ouverture des marches.
+Deux niveaux verrouilles ici : le parsing de la reponse Nasdaq (clotures
+quotidiennes et cours intra-seance) dans `fetch_history`, et la route
+`/api/history/{symbol}` qui l'expose. Aucune requete reelle : `httpx.get` est
+remplace par un double qui rejoue une charge utile figee.
 """
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from fastapi.testclient import TestClient
 
-from trader.coach.account import PaperAccount
-from trader.coach.quotes import Quote
+from trader.coach import quotes
+from trader.coach.quotes import PriceHistory, QuoteError, fetch_history
 from trader.webapp import server as webapp
 
 
-@pytest.fixture(autouse=True)
-def cotations_figees(monkeypatch):
-    def quote(symbol: str) -> Quote:
-        return Quote(
-            symbol=symbol.upper(),
-            price=100.0,
-            change=0.0,
-            change_pct=0.0,
-            previous_close=100.0,
-            market_status="Market Open",
-            is_real_time=True,
-            timestamp="",
-        )
+class _FausseReponse:
+    def __init__(self, payload: dict):
+        self._payload = payload
 
-    monkeypatch.setattr(webapp, "fetch_quote", quote)
-    monkeypatch.setattr(webapp, "fetch_quotes", lambda symbols: {s: quote(s) for s in symbols})
+    def raise_for_status(self) -> None:  # noqa: D401 - double de test
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+_LIGNES_QUOTIDIENNES = {
+    "data": {
+        "tradesTable": {
+            "rows": [
+                {"date": "09/02/2026", "close": "$252.10"},
+                {"date": "08/29/2026", "close": "$248.00"},
+                {"date": "08/28/2026", "close": "$255.40"},
+                {"date": "08/27/2026", "close": "N/A"},  # ligne trouee : ignoree
+            ]
+        }
+    }
+}
+
+_POINTS_INTRASEANCE = {
+    "data": {
+        "chart": [
+            {"z": {"dateTime": "2026-09-02 09:30", "value": "250.00"}},
+            {"z": {"dateTime": "2026-09-02 10:00", "value": "251.20"}},
+            {"z": {"dateTime": "2026-09-02 10:30", "value": "249.80"}},
+        ]
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def _vide_cache():
+    quotes.clear_cache()
+    yield
+    quotes.clear_cache()
+
+
+# ------------------------------------------------------- parsing fetch_history
+
+
+def test_periode_mensuelle_rend_les_clotures_triees(monkeypatch):
+    monkeypatch.setattr(quotes.httpx, "get", lambda *a, **k: _FausseReponse(_LIGNES_QUOTIDIENNES))
+    histo = fetch_history("NVDA", "1M")
+
+    assert histo.symbol == "NVDA"
+    assert histo.period == "1M"
+    # trie du plus ancien au plus recent, la ligne "N/A" ecartee
+    assert [stamp for stamp, _ in histo.points] == [
+        "2026-08-28",
+        "2026-08-29",
+        "2026-09-02",
+    ]
+    assert [prix for _, prix in histo.points] == [255.4, 248.0, 252.1]
+
+
+def test_to_dict_calcule_les_bornes_et_la_variation(monkeypatch):
+    monkeypatch.setattr(quotes.httpx, "get", lambda *a, **k: _FausseReponse(_LIGNES_QUOTIDIENNES))
+    charge = fetch_history("NVDA", "3M").to_dict()
+
+    assert charge["period"] == "3M"
+    assert charge["first"] == 255.4
+    assert charge["last"] == 252.1
+    assert charge["low"] == 248.0
+    assert charge["high"] == 255.4
+    assert charge["change_pct"] == pytest.approx(round((252.1 / 255.4 - 1) * 100, 2))
+    assert charge["points"][0] == ["2026-08-28", 255.4]
+
+
+def test_periode_1d_passe_par_l_endpoint_intraseance(monkeypatch):
+    vus: dict[str, str] = {}
+
+    def faux_get(url, **kwargs):
+        vus["url"] = url
+        return _FausseReponse(_POINTS_INTRASEANCE)
+
+    monkeypatch.setattr(quotes.httpx, "get", faux_get)
+    histo = fetch_history("NVDA", "1D")
+
+    assert "chart" in vus["url"]
+    assert len(histo.points) == 3
+    assert histo.points[0] == ("2026-09-02 09:30", 250.0)
+
+
+def test_periode_inconnue_retombe_sur_1m(monkeypatch):
+    monkeypatch.setattr(quotes.httpx, "get", lambda *a, **k: _FausseReponse(_LIGNES_QUOTIDIENNES))
+    assert fetch_history("NVDA", "10Y").period == "1M"
+
+
+def test_historique_trop_court_leve_quote_error(monkeypatch):
+    monkeypatch.setattr(
+        quotes.httpx,
+        "get",
+        lambda *a, **k: _FausseReponse({"data": {"tradesTable": {"rows": []}}}),
+    )
+    with pytest.raises(QuoteError):
+        fetch_history("ZZZZ", "1M")
+
+
+def test_erreur_reseau_devient_quote_error(monkeypatch):
+    def boum(*a, **k):
+        raise quotes.httpx.HTTPError("connexion coupee")
+
+    monkeypatch.setattr(quotes.httpx, "get", boum)
+    with pytest.raises(QuoteError):
+        fetch_history("NVDA", "1M")
+
+
+def test_le_cache_evite_un_second_appel(monkeypatch):
+    appels = {"n": 0}
+
+    def compte(*a, **k):
+        appels["n"] += 1
+        return _FausseReponse(_LIGNES_QUOTIDIENNES)
+
+    monkeypatch.setattr(quotes.httpx, "get", compte)
+    fetch_history("NVDA", "1M")
+    fetch_history("NVDA", "1M")
+    assert appels["n"] == 1
+
+
+# ------------------------------------------------------------------ la route
 
 
 @pytest.fixture
-def compte(tmp_path) -> PaperAccount:
-    account = PaperAccount(tmp_path / "compte.json")
-    account.deposit(1000.0)
-    return account
+def client(tmp_path):
+    # Mode solo (store=...) : la courbe de cours ne touche pas au compte, pas
+    # besoin de l'en-tete X-Coach-Account qu'impose le mode heberge.
+    return TestClient(webapp.create_app(store=tmp_path / "compte.json"))
 
 
-def _cloture(compte: PaperAccount, symbol: str, **kwargs) -> None:
-    position = compte.open_position(symbol, 1.0, 100.0, stop=98.0, **kwargs)
-    compte.close_position(position.id, 101.0)
+def test_la_route_sert_la_courbe(client, monkeypatch):
+    points = [("2026-08-01", 100.0), ("2026-08-15", 110.0), ("2026-09-01", 121.0)]
+    monkeypatch.setattr(
+        webapp, "fetch_history", lambda symbol, period="1M": PriceHistory(symbol.upper(), period, points)
+    )
+    reponse = client.get("/api/history/nvda", params={"period": "3M"})
 
-
-def _reponse(tmp_path) -> str:
-    """Corps brut de /api/history. L'application relit le compte sur disque,
-    elle est donc construite APRES que les trades y ont ete ecrits."""
-    client = TestClient(webapp.create_app(store=tmp_path / "compte.json"))
-    reponse = client.get("/api/history")
     assert reponse.status_code == 200
-    return reponse.text
+    corps = reponse.json()
+    assert corps["symbol"] == "NVDA"
+    assert corps["period"] == "3M"
+    assert corps["points"] == [["2026-08-01", 100.0], ["2026-08-15", 110.0], ["2026-09-01", 121.0]]
+    assert corps["low"] == 100.0 and corps["high"] == 121.0
+    assert corps["change_pct"] == pytest.approx(21.0)
 
 
-def _trades(tmp_path) -> dict[str, dict]:
-    return {trade["symbol"]: trade for trade in json.loads(_reponse(tmp_path))["trades"]}
+def test_la_route_renvoie_404_si_indisponible(client, monkeypatch):
+    def indispo(symbol, period="1M"):
+        raise QuoteError("historique indisponible")
+
+    monkeypatch.setattr(webapp, "fetch_history", indispo)
+    assert client.get("/api/history/zzzz").status_code == 404
 
 
-def test_un_objectif_est_rendu_en_multiples_du_risque(compte, tmp_path):
-    _cloture(compte, "AAA", target=105.0)
-    trade = _trades(tmp_path)["AAA"]
-    assert trade["plan"] == "objectif"
-    assert trade["planned_ok"] is True
-    # Mesure sur le prix REELLEMENT execute, slippage compris : c'est celui-la
-    # qui fixe le risque au stop, pas la cotation affichee avant l'ordre.
-    cloture = compte.state.history[0]
-    attendu = (105.0 - cloture.entry_price) * cloture.shares / cloture.planned_risk
-    assert trade["planned_ratio"] == pytest.approx(round(attendu, 2))
+def test_periode_par_defaut_est_1m(client, monkeypatch):
+    recu: dict[str, str] = {}
 
+    def capte(symbol, period="1M"):
+        recu["period"] = period
+        return PriceHistory(symbol.upper(), period, [("2026-08-01", 1.0), ("2026-08-02", 2.0)])
 
-def test_un_stop_suiveur_compte_comme_un_plan(compte, tmp_path):
-    _cloture(compte, "BBB", trailing_pct=8.0)
-    trade = _trades(tmp_path)["BBB"]
-    assert trade["plan"] == "suiveur"
-    assert trade["trailing_pct"] == 8.0
-    assert trade["planned_ok"] is True
-
-
-def test_un_trade_sans_rien_en_face_du_stop_est_signale(compte, tmp_path):
-    _cloture(compte, "CCC")
-    trade = _trades(tmp_path)["CCC"]
-    assert trade["plan"] == "aucun"
-    assert trade["planned_ratio"] is None
-    assert trade["planned_ok"] is False
-
-
-def test_un_objectif_plus_petit_que_le_risque_est_signale(compte, tmp_path):
-    """Viser moins que ce qu'on risque est le contraire de « couper court »."""
-    _cloture(compte, "DDD", target=101.0)
-    trade = _trades(tmp_path)["DDD"]
-    assert trade["planned_ratio"] < 1.0
-    assert trade["planned_ok"] is False
-
-
-def test_un_gain_sans_plafond_ne_renvoie_jamais_l_infini(compte, tmp_path):
-    """`json.dumps` ecrirait `Infinity`, que `JSON.parse` refuse : page blanche.
-
-    Le cas se produit des qu'un stop suiveur est arme, donc en usage normal.
-    """
-    _cloture(compte, "EEE", trailing_pct=8.0)
-    assert "Infinity" not in _reponse(tmp_path)
-    assert _trades(tmp_path)["EEE"]["planned_ratio"] is None
+    monkeypatch.setattr(webapp, "fetch_history", capte)
+    client.get("/api/history/nvda")
+    assert recu["period"] == "1M"

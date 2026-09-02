@@ -43,7 +43,7 @@ from trader.coach.curriculum import (
     planned_ratio,
 )
 from trader.coach.debrief import debrief_trade, recurring_patterns
-from trader.coach.quotes import QuoteError, fetch_quote, fetch_quotes
+from trader.coach.quotes import QuoteError, fetch_history, fetch_quote, fetch_quotes
 from trader.logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -364,6 +364,14 @@ def create_app(
     def get_quote(symbol: str) -> dict:
         try:
             return fetch_quote(symbol).to_dict()
+        except QuoteError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @app.get("/api/history/{symbol}")
+    def get_price_history(symbol: str, period: str = "1M") -> dict:
+        """Courbe de cours d'un titre : 1D (intra-seance), 1M, 3M ou 1Y."""
+        try:
+            return fetch_history(symbol, period).to_dict()
         except QuoteError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 

@@ -9,6 +9,135 @@ let state = null;
 let riskPct = 1;
 let pendingPlan = null;
 
+/* ------------------------------------------------------- courbes de cours
+
+   Un cache court en memoire evite de rappeler /api/history a chaque poll de la
+   watchlist (toutes les 30 s) ou a chaque frappe dans le formulaire. Un titre
+   sans historique est memorise comme `null` : on n'y revient pas en boucle. */
+
+const PERIODS = { '1D': '1 jour', '1M': '1 mois', '3M': '3 mois', '1Y': '1 an' };
+const histCache = new Map();
+const HIST_TTL = 120000;
+let chartPeriod = localStorage.getItem('coach.chartPeriod') || '1M';
+if (!PERIODS[chartPeriod]) chartPeriod = '1M';
+
+async function loadHistory(symbol, period) {
+  if (!symbol) return null;
+  const key = symbol.toUpperCase() + '|' + period;
+  const hit = histCache.get(key);
+  if (hit && Date.now() - hit.at < HIST_TTL) return hit.data;
+  try {
+    const data = await api(`/api/history/${encodeURIComponent(symbol)}?period=${period}`);
+    histCache.set(key, { at: Date.now(), data });
+    return data;
+  } catch {
+    histCache.set(key, { at: Date.now(), data: null });
+    return null;
+  }
+}
+
+// Chemin SVG d'une suite de valeurs, projetee dans un viewBox w x h.
+function svgLine(values, w, h, pad, lo, span) {
+  const stepX = (w - pad * 2) / (values.length - 1 || 1);
+  return values
+    .map((v, i) => {
+      const x = pad + i * stepX;
+      const y = pad + (h - pad * 2) * (1 - (v - lo) / span);
+      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    })
+    .join(' ');
+}
+
+function sparkline(points, dir) {
+  if (!points || points.length < 2) return '<span class="spark-void"></span>';
+  const w = 76;
+  const h = 26;
+  const ys = points.map((p) => p[1]);
+  const lo = Math.min(...ys);
+  const span = Math.max(...ys) - lo || 1;
+  const tone = dir > 0 ? 'up' : dir < 0 ? 'down' : 'flat';
+  return `<svg class="spark ${tone}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${svgLine(ys, w, h, 2, lo, span)}"/></svg>`;
+}
+
+// Grand graphe : aire + ligne teintee par le sens, plus des reperes
+// horizontaux en pointilles (stop, objectif, entree, declencheur). Le texte
+// des bornes est en HTML par-dessus, jamais dans le SVG etire.
+function priceChart(hist, markers) {
+  const box = document.createElement('div');
+  box.className = 'pchart-box';
+  if (!hist || !hist.points || hist.points.length < 2) {
+    box.innerHTML = '<div class="pchart-void">Pas de courbe disponible pour ce titre.</div>';
+    return box;
+  }
+  const W = 600;
+  const H = 150;
+  const pad = 6;
+  const ys = hist.points.map((p) => p[1]);
+  const levels = (markers || []).map((m) => m.value).filter((v) => v > 0);
+  const lo = Math.min(...ys, ...levels);
+  const hi = Math.max(...ys, ...levels);
+  const span = hi - lo || 1;
+  const yOf = (v) => pad + (H - pad * 2) * (1 - (v - lo) / span);
+  const line = svgLine(ys, W, H, pad, lo, span);
+  const area = `${line} L${(W - pad).toFixed(1)} ${(H - pad).toFixed(1)} L${pad} ${(H - pad).toFixed(1)} Z`;
+  const up = ys[ys.length - 1] >= ys[0];
+  const rules = (markers || [])
+    .filter((m) => m.value > 0)
+    .map(
+      (m) =>
+        `<line class="pc-mark pc-${m.kind}" x1="0" x2="${W}" y1="${yOf(m.value).toFixed(1)}" y2="${yOf(m.value).toFixed(1)}"/>`
+    )
+    .join('');
+  box.innerHTML =
+    `<svg class="pchart ${up ? 'up' : 'down'}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="courbe de cours">` +
+    `<path class="pc-area" d="${area}"/>${rules}<path class="pc-line" d="${line}"/></svg>` +
+    `<div class="pc-scale"><span>${euro(hi)} €</span><span>${euro(lo)} €</span></div>`;
+  return box;
+}
+
+let tchartTimer = null;
+
+async function renderTradeChart() {
+  const symbol = $('t-symbol').value.trim().toUpperCase();
+  const wrap = $('t-chart');
+  if (!symbol) {
+    wrap.classList.add('hidden');
+    return;
+  }
+  wrap.classList.remove('hidden');
+  document.querySelectorAll('#t-chart-periods button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.p === chartPeriod)
+  );
+  $('t-chart-title').textContent = symbol;
+  if (!$('t-chart-body').firstChild) {
+    $('t-chart-body').innerHTML = '<div class="pchart-void">Chargement…</div>';
+  }
+  const hist = await loadHistory(symbol, chartPeriod);
+  // Le titre a pu changer pendant l'attente : on ne peint pas un resultat perime.
+  if ($('t-symbol').value.trim().toUpperCase() !== symbol) return;
+  const markers = [
+    { value: parseFloat($('t-stop').value), kind: 'stop', label: 'stop' },
+    { value: parseFloat($('t-target').value), kind: 'target', label: 'objectif' },
+    { value: parseFloat($('t-trigger').value), kind: 'trigger', label: 'déclencheur' },
+  ];
+  $('t-chart-body').replaceChildren(priceChart(hist, markers));
+  if (hist) {
+    const sign = hist.change_pct >= 0 ? '+' : '';
+    $('t-chart-title').innerHTML =
+      `${symbol} <span class="${cls(hist.change_pct)}">${sign}${hist.change_pct.toFixed(2)} %</span>` +
+      ` <span class="muted small">sur ${PERIODS[chartPeriod]}</span>`;
+  }
+  $('t-chart-legend').innerHTML = markers
+    .filter((m) => m.value > 0)
+    .map((m) => `<span class="pc-leg pc-${m.kind}">${m.label} ${euro(m.value)} €</span>`)
+    .join('');
+}
+
+function scheduleTradeChart(delay = 350) {
+  clearTimeout(tchartTimer);
+  tchartTimer = setTimeout(renderTradeChart, delay);
+}
+
 /* ------------------------------------------------- compte detenu localement
 
    En ligne, le serveur n'a pas de disque durable et ne demande aucun mot de
@@ -170,7 +299,7 @@ function renderPositions(positions) {
     return;
   }
   $('positions-list').innerHTML = positions
-    .map((p) => {
+    .map((p, i) => {
       const margin = Math.max(0, Math.min(100, p.distance_to_stop_pct * 5));
       const near = p.distance_to_stop_pct < 3;
       // Un risque negatif n'est pas une perte : le stop est passe au-dessus du
@@ -191,6 +320,7 @@ function renderPositions(positions) {
         ${near ? `<div class="alert-stop">⚠ Le stop est à ${p.distance_to_stop_pct.toFixed(2)} % — une séance ordinaire suffit à le déclencher.</div>` : ''}
         <div class="stop-bar"><div class="stop-fill" style="width:${margin}%;background:${stopColor(p.distance_to_stop_pct)}"></div></div>
         <div class="muted small" style="margin-bottom:12px">Marge avant le stop : ${p.distance_to_stop_pct.toFixed(2)} %</div>
+        <div class="pos-chart" data-i="${i}"></div>
         ${locked ? `<div class="alert-locked">✓ Ce trade ne peut plus coûter d'argent : au stop, il rapporterait encore ${euro(-p.risk_at_stop)} €. Le laisser courir ne risque plus que le gain, jamais le capital.</div>` : ''}
         <div class="pos-grid">
           <div><div class="pg-label">Cours</div><div class="pg-value">${euro(p.price)}</div></div>
@@ -215,6 +345,22 @@ function renderPositions(positions) {
       </div>`;
     })
     .join('');
+
+  // Courbe 1 mois par position, avec l'entree, le stop et l'objectif reportes.
+  positions.forEach((p, i) => {
+    const slot = $('positions-list').querySelector(`.pos-chart[data-i="${i}"]`);
+    if (!slot) return;
+    loadHistory(p.symbol, '1M').then((hist) => {
+      if (!hist || !slot.isConnected) return;
+      slot.replaceChildren(
+        priceChart(hist, [
+          { value: p.entry_price, kind: 'entry' },
+          { value: p.stop, kind: 'stop' },
+          { value: p.target || 0, kind: 'target' },
+        ])
+      );
+    });
+  });
 }
 
 function renderLevels(progress) {
@@ -282,6 +428,7 @@ async function renderHistory() {
       if (!t.planned_ok) flags.push(planLabel(t));
       return `<div class="hist-row" onclick="showDebrief('${t.id}')">
         <div class="wl-sym">${t.symbol}</div>
+        <div class="hist-spark" data-sym="${t.symbol}"></div>
         <div>
           <div class="small">${euro(t.entry_price)} → ${euro(t.exit_price)} · ${t.holding_days} j · ${planLabel(t)}</div>
           <div class="hist-flags">${flags.length ? '⚠ ' + flags.join(' · ') : t.exit_reason}</div>
@@ -291,6 +438,14 @@ async function renderHistory() {
       </div>`;
     })
     .join('');
+  const cells = $('history-list').querySelectorAll('.hist-spark');
+  trades.forEach((t, i) => {
+    const cell = cells[i];
+    if (!cell) return;
+    loadHistory(t.symbol, '1M').then((hist) => {
+      if (hist && cell.isConnected) cell.innerHTML = sparkline(hist.points, t.pnl);
+    });
+  });
 }
 
 async function renderWatchlist() {
@@ -303,6 +458,7 @@ async function renderWatchlist() {
         (q) => `<div class="wl-row" onclick="pickSymbol('${q.symbol}', ${q.price})">
           <div class="wl-sym">${q.symbol}</div>
           <div class="wl-name">${q.company || ''}</div>
+          <div class="wl-spark" data-sym="${q.symbol}"></div>
           <div>
             <div class="wl-price">${euro(q.price)}</div>
             <div class="wl-chg ${cls(q.change_pct)}" style="text-align:right">${q.change_pct >= 0 ? '+' : ''}${q.change_pct.toFixed(2)} %</div>
@@ -310,8 +466,20 @@ async function renderWatchlist() {
         </div>`
       )
       .join('');
+    paintWatchlistSparks(quotes);
   } catch (error) {
     $('market-status').textContent = 'Cours indisponibles : ' + error.message;
+  }
+}
+
+// Sparklines de la watchlist : chargees apres coup, une par une, pour ne pas
+// retarder l'affichage des prix ni marteler l'API. Le cache absorbe les polls.
+async function paintWatchlistSparks(quotes) {
+  for (const q of quotes) {
+    const cell = $('watchlist')?.querySelector(`.wl-spark[data-sym="${q.symbol}"]`);
+    if (!cell) continue;
+    const hist = await loadHistory(q.symbol, '1M');
+    if (hist && cell.isConnected) cell.innerHTML = sparkline(hist.points, q.change_pct);
   }
 }
 
@@ -321,6 +489,7 @@ window.pickSymbol = (symbol, price) => {
   $('t-symbol').value = symbol;
   $('price-hint').textContent = `${symbol} cote ${euro(price)} — un stop à −5 % serait ${euro(price * 0.95)}`;
   if (!$('t-stop').value) $('t-stop').value = (price * 0.95).toFixed(2);
+  renderTradeChart();
 };
 
 window.moveStop = async (id) => {
@@ -638,6 +807,7 @@ async function confirmTrade() {
     $('t-trailing-on').checked = false;
     $('t-trailing-row').classList.add('hidden');
     $('price-hint').textContent = '';
+    renderTradeChart();
     pendingPlan = null;
     await refresh();
     document.querySelector('[data-tab="positions"]').click();
@@ -699,6 +869,7 @@ async function placeOrder() {
     $('t-trailing-row').classList.add('hidden');
     $('review-btn').textContent = 'Analyser ce trade';
     $('price-hint').textContent = '';
+    renderTradeChart();
     await refresh();
     document.querySelector('[data-tab="ordres"]').click();
   } catch (error) {
@@ -830,6 +1001,21 @@ $('t-cond-on').addEventListener('change', (event) => {
     ? "Placer l'ordre conditionnel"
     : 'Analyser ce trade';
 });
+
+// Courbe du titre : suit la saisie du symbole, et les pointillés du stop /
+// objectif / déclencheur se recalent à chaque frappe (l'historique est en
+// cache, seul le SVG est redessiné).
+$('t-symbol').addEventListener('input', () => scheduleTradeChart());
+['t-stop', 't-target', 't-trigger'].forEach((id) =>
+  $(id).addEventListener('input', () => scheduleTradeChart(250))
+);
+document.querySelectorAll('#t-chart-periods button').forEach((btn) =>
+  btn.addEventListener('click', () => {
+    chartPeriod = btn.dataset.p;
+    localStorage.setItem('coach.chartPeriod', chartPeriod);
+    renderTradeChart();
+  })
+);
 
 $('calc-size').addEventListener('click', calcSize);
 $('review-btn').addEventListener('click', () =>
